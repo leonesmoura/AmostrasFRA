@@ -1,0 +1,14 @@
+# AMOSTRAS FRA 2.0 — dependências
+# Testado com Python 3.11/3.12 em Windows 11.
+
+PySide6>=6.6
+numpy>=2.0
+scipy>=1.11
+pandas>=2.0
+matplotlib>=3.8
+openpyxl>=3.1
+odfpy>=1.4
+impedance>=1.7
+
+# Empacotamento (opcional, apenas para gerar o executável):
+pyinstaller>=6.0

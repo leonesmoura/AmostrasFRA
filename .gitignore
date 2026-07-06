@@ -1,0 +1,31 @@
+# Bytecode e cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Empacotamento (PyInstaller / setuptools)
+build/
+dist/
+*.spec
+*.egg-info/
+.eggs/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Logs da aplicação
+*.log
+.amostras_fra/
+
+# Configurações de IDE/editor
+.idea/
+.vscode/
+*.swp
+
+# Sistema operacional
+Thumbs.db
+Desktop.ini
+.DS_Store
