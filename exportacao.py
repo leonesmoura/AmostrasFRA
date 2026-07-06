@@ -326,7 +326,7 @@ _OBSERVATION_LINES_PER_PAGE: int = 38
 
 def _summary_pages(
     measurements: Sequence[Measurement],
-    correction: Optional[InstrumentCorrection],
+    corrections: Sequence[InstrumentCorrection],
 ) -> list[Figure]:
     """Monta a(s) página(s) de resumo do relatório (paginadas)."""
     now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -336,11 +336,14 @@ def _summary_pages(
         f"Medições analisadas: {len(measurements)}\n"
         "Técnica: Espectroscopia de Impedância (EIS/FRA)"
     )
-    if correction is not None:
+    if corrections:
+        descriptions = "; ".join(
+            f"{c.name} (resistor {c.r_nominal:.6g} Ω, {c.n_points} pts)"
+            for c in corrections
+        )
         header += (
-            "\nCorreção do instrumento: aplicada "
-            f"(resistor padrão de {correction.r_nominal:.6g} Ω, "
-            f"{correction.n_points} pontos)"
+            f"\nCorreções do instrumento ({len(corrections)}): "
+            f"{descriptions}"
         )
     else:
         header += "\nCorreção do instrumento: não configurada"
@@ -515,7 +518,7 @@ def generate_pdf_report(
     measurements: Sequence[Measurement],
     kk_results: Optional[Sequence[KKResult]] = None,
     fit_results: Optional[Sequence[FitResult]] = None,
-    correction: Optional[InstrumentCorrection] = None,
+    corrections: Optional[Sequence[InstrumentCorrection]] = None,
     observations: str = "",
 ) -> None:
     """Gera o relatório PDF completo da análise.
@@ -530,7 +533,7 @@ def generate_pdf_report(
         measurements: Medições incluídas no relatório (ao menos uma).
         kk_results: Resultados de Kramers-Kronig (opcional).
         fit_results: Resultados de ajuste de circuito (opcional).
-        correction: Correção do instrumento usada (opcional).
+        corrections: Correções do instrumento da biblioteca (opcional).
         observations: Texto livre de observações.
 
     Raises:
@@ -541,6 +544,7 @@ def generate_pdf_report(
     file_path = Path(path)
     kk_results = list(kk_results or [])
     fit_results = list(fit_results or [])
+    corrections = list(corrections or [])
     style = PlotStyle(marker="o", marker_size=4.0, line_width=1.2)
 
     logger.info(
@@ -553,7 +557,7 @@ def generate_pdf_report(
 
     with matplotlib.rc_context(LIGHT_RC):
         with PdfPages(file_path) as pdf:
-            for fig in _summary_pages(measurements, correction):
+            for fig in _summary_pages(measurements, corrections):
                 pdf.savefig(fig)
 
             if fit_results:

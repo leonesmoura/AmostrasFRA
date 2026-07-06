@@ -46,12 +46,14 @@ class InstrumentCorrection:
         magnitude: Módulo medido ``|Z|`` do resistor padrão (Ω).
         phase_deg: Fase medida do resistor padrão (graus).
         r_nominal: Resistência nominal do resistor padrão (Ω).
+        name: Nome da correção (identifica o instrumento/resistor).
     """
 
     frequency: np.ndarray
     magnitude: np.ndarray
     phase_deg: np.ndarray
     r_nominal: float
+    name: str = "Correção"
     _log_freq: np.ndarray = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -175,10 +177,18 @@ class InstrumentCorrection:
             else f"{measurement.name} (corrigida)"
         )
         logger.info(
-            "Correção aplicada em '%s' (%d pontos, R nominal = %.6g Ω).",
+            "Correção '%s' aplicada em '%s' (%d pontos, "
+            "R nominal = %.6g Ω).",
+            self.name,
             measurement.name,
             measurement.n_points,
             self.r_nominal,
+        )
+        note = f"Correção do instrumento aplicada: {self.name}."
+        notes = (
+            f"{measurement.notes}\n{note}".strip()
+            if measurement.notes
+            else note
         )
         return Measurement(
             name=name,
@@ -186,7 +196,7 @@ class InstrumentCorrection:
             z_real=np.real(z_corrected),
             z_imag=np.imag(z_corrected),
             corrected=True,
-            notes=measurement.notes,
+            notes=notes,
         )
 
     # ------------------------------------------------------------------
@@ -210,6 +220,7 @@ class InstrumentCorrection:
         cls,
         rows: Sequence[Sequence[Optional[float]]],
         r_nominal: float,
+        name: str = "Correção",
     ) -> "InstrumentCorrection":
         """Cria a correção a partir de linhas ``[freq, mag, fase]``.
 
@@ -218,6 +229,7 @@ class InstrumentCorrection:
         Args:
             rows: Linhas com frequência, magnitude e fase.
             r_nominal: Resistência nominal do resistor padrão (Ω).
+            name: Nome da correção (instrumento/resistor).
 
         Returns:
             Instância validada de :class:`InstrumentCorrection`.
@@ -253,4 +265,5 @@ class InstrumentCorrection:
             magnitude=np.asarray(mag),
             phase_deg=np.asarray(phase),
             r_nominal=float(r_nominal),
+            name=name,
         )

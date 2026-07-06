@@ -43,11 +43,16 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   - **Bode Magnitude** (`|Z|` × f, log-log) e **Bode Fase** (fase × f,
     semilog);
   - **Kramers-Kronig**, **Circuito Equivalente** e **Comparação**.
-- **Correção do instrumento**: janela própria para os dados do resistor
-  padrão (frequência, magnitude, fase). Calcula a impedância complexa e a
-  função de transferência `H(f) = Z_med / R_nominal` e aplica
-  `Z_corr = Z_med / H(f)` a qualquer medição marcada (NumPy vetorizado,
-  interpolação em log-frequência).
+- **Correção do instrumento** com **biblioteca de correções nomeadas**:
+  janela própria onde se cadastram várias correções (uma por
+  instrumento/resistor padrão), cada uma com nome, resistência nominal e
+  os dados de frequência/magnitude/fase. Calcula a impedância complexa e
+  a função de transferência `H(f) = Z_med / R_nominal` e aplica
+  `Z_corr = Z_med / H(f)`. Ao corrigir, escolhe-se **qual** correção
+  aplicar às medições marcadas — assim, amostras medidas com um
+  instrumento que não precisa de correção ficam sem correção, enquanto
+  outras recebem a correção adequada (NumPy vetorizado, interpolação em
+  log-frequência).
 - **Validação de Kramers-Kronig** com todas as frequências medidas
   (nenhuma é eliminada), Valor Principal de Cauchy tratado analiticamente
   (singularidade removível via L'Hôpital), reconstrução das partes real e

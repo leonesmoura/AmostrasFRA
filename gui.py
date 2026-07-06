@@ -1354,23 +1354,50 @@ class IVTab(QWidget):
 # Janela de Correção do Instrumento
 # ---------------------------------------------------------------------------
 class CorrectionDialog(QDialog):
-    """Janela "Correção do Instrumento".
+    """Janela "Correção do Instrumento" (biblioteca de correções).
 
-    Permite inserir (digitar, colar ou importar) a frequência, a
-    magnitude e a fase medidas do resistor padrão, calcula a
-    impedância complexa e a função de transferência ``H(f)`` e exibe a
-    pré-visualização de ``|H|`` e da fase de ``H``.
+    Gerencia várias correções nomeadas (uma por instrumento/resistor
+    padrão).  Para cada correção, permite inserir (digitar, colar ou
+    importar) a frequência, a magnitude e a fase do resistor padrão,
+    calcula a impedância complexa e a função de transferência
+    ``H(f)`` e exibe a pré-visualização de ``|H|`` e da fase de ``H``.
+
+    Ao fechar com "Salvar", a biblioteca atualizada fica disponível em
+    :attr:`corrections` (dicionário ``{nome: InstrumentCorrection}``).
     """
+
+    _NEW_ENTRY = "(Nova correção)"
 
     def __init__(
         self,
         parent: Optional[QWidget] = None,
-        correction: Optional[InstrumentCorrection] = None,
+        corrections: Optional[
+            "dict[str, InstrumentCorrection]"
+        ] = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Correção do Instrumento")
-        self.resize(900, 620)
-        self.correction: Optional[InstrumentCorrection] = correction
+        self.resize(940, 660)
+        #: Biblioteca de correções (cópia de trabalho).
+        self.corrections: dict[str, InstrumentCorrection] = dict(
+            corrections or {}
+        )
+
+        # -- Seleção da correção -----------------------------------------
+        self.select_combo = QComboBox(self)
+        self.select_combo.currentIndexChanged.connect(
+            self._on_select_changed
+        )
+        self.remove_button = QPushButton("Remover correção", self)
+        self.remove_button.clicked.connect(self._on_remove)
+
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setPlaceholderText(
+            "Ex.: Instrumento A (resistor 100 Ω)"
+        )
+        self.name_edit.setToolTip(
+            "Nome da correção — identifica o instrumento/resistor."
+        )
 
         self.table = PasteableTable(
             ("Frequência (Hz)", "Magnitude (Ω)", "Fase (°)"),
@@ -1390,24 +1417,38 @@ class CorrectionDialog(QDialog):
         self.compute_button = QPushButton("Calcular H(f)", self)
         self.compute_button.clicked.connect(self._on_compute)
 
+        self.save_button = QPushButton("Salvar correção na lista", self)
+        self.save_button.setToolTip(
+            "Guarda a correção atual na biblioteca sem fechar a janela."
+        )
+        self.save_button.clicked.connect(self._on_save_current)
+
         self.status_label = QLabel(
-            "Insira os dados do resistor padrão e clique em "
-            "\"Calcular H(f)\".",
+            "Selecione \"(Nova correção)\", dê um nome, insira os dados "
+            "do resistor padrão e clique em \"Calcular H(f)\".",
             self,
         )
         self.status_label.setWordWrap(True)
 
         self.canvas = PlotCanvas(self)
 
+        select_row = QHBoxLayout()
+        select_row.addWidget(QLabel("Correção:", self))
+        select_row.addWidget(self.select_combo, 1)
+        select_row.addWidget(self.remove_button)
+
         form = QFormLayout()
+        form.addRow("Nome:", self.name_edit)
         form.addRow("Resistor padrão (Ω):", self.r_nominal_edit)
 
         left = QVBoxLayout()
+        left.addLayout(select_row)
         left.addLayout(form)
         left.addWidget(self.table, 1)
         buttons_row = QHBoxLayout()
         buttons_row.addWidget(self.import_button)
         buttons_row.addWidget(self.compute_button)
+        buttons_row.addWidget(self.save_button)
         buttons_row.addStretch(1)
         left.addLayout(buttons_row)
 
@@ -1425,7 +1466,7 @@ class CorrectionDialog(QDialog):
         )
         self.button_box.button(
             QDialogButtonBox.StandardButton.Ok
-        ).setText("Definir correção")
+        ).setText("Salvar e fechar")
         self.button_box.accepted.connect(self._on_accept)
         self.button_box.rejected.connect(self.reject)
 
@@ -1434,8 +1475,56 @@ class CorrectionDialog(QDialog):
         layout.addWidget(self.status_label)
         layout.addWidget(self.button_box)
 
-        if correction is not None:
-            self._load_existing(correction)
+        self._reload_combo(select_first_existing=True)
+
+    # -- Biblioteca ----------------------------------------------------------
+    def _reload_combo(self, select_first_existing: bool = False) -> None:
+        """Repovoa o combo com a biblioteca atual."""
+        self.select_combo.blockSignals(True)
+        try:
+            self.select_combo.clear()
+            self.select_combo.addItem(self._NEW_ENTRY)
+            for name in self.corrections:
+                self.select_combo.addItem(name)
+        finally:
+            self.select_combo.blockSignals(False)
+        if select_first_existing and self.corrections:
+            self.select_combo.setCurrentIndex(1)
+            self._on_select_changed(1)
+        else:
+            self.select_combo.setCurrentIndex(0)
+            self._on_select_changed(0)
+
+    def _on_select_changed(self, _index: int) -> None:
+        """Carrega a correção escolhida (ou limpa para uma nova)."""
+        name = self.select_combo.currentText()
+        if name == self._NEW_ENTRY or name not in self.corrections:
+            self.table.clear_all()
+            self.r_nominal_edit.clear()
+            self.name_edit.setText(
+                unique_name("Correção", list(self.corrections))
+            )
+            self.canvas.clear()
+            self.canvas.draw()
+            self.remove_button.setEnabled(False)
+            return
+        self.remove_button.setEnabled(True)
+        self._load_existing(self.corrections[name])
+
+    def _on_remove(self) -> None:
+        """Remove a correção selecionada da biblioteca."""
+        name = self.select_combo.currentText()
+        if name == self._NEW_ENTRY or name not in self.corrections:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Remover correção",
+            f"Remover a correção '{name}' da biblioteca?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.corrections.pop(name, None)
+        self._reload_combo()
 
     def _load_existing(self, correction: InstrumentCorrection) -> None:
         """Preenche a janela com uma correção existente."""
@@ -1451,6 +1540,7 @@ class CorrectionDialog(QDialog):
         self.r_nominal_edit.setText(
             _CELL_FORMAT.format(correction.r_nominal)
         )
+        self.name_edit.setText(correction.name)
         self._plot(correction)
 
     def _on_import(self) -> None:
@@ -1503,6 +1593,9 @@ class CorrectionDialog(QDialog):
         Raises:
             ValueError: Se os dados forem insuficientes/inválidos.
         """
+        name = self.name_edit.text().strip()
+        if not name:
+            raise ValueError("Informe um nome para a correção.")
         r_nominal = parse_number(self.r_nominal_edit.text() or "")
         if r_nominal is None or r_nominal <= 0.0:
             raise ValueError(
@@ -1510,7 +1603,43 @@ class CorrectionDialog(QDialog):
                 "maior que zero)."
             )
         return InstrumentCorrection.from_rows(
-            self.table.get_rows(), r_nominal
+            self.table.get_rows(), r_nominal, name=name
+        )
+
+    def _store_current(self) -> Optional[InstrumentCorrection]:
+        """Valida e guarda a correção atual na biblioteca de trabalho.
+
+        Returns:
+            A correção armazenada, ou ``None`` se houver erro (já
+            avisado ao usuário).
+        """
+        try:
+            correction = self._build_correction()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Correção do Instrumento", str(exc))
+            return None
+        self.corrections[correction.name] = correction
+        logger.info(
+            "Correção '%s' salva (R nominal = %s).",
+            correction.name,
+            format_engineering(correction.r_nominal, "Ω"),
+        )
+        return correction
+
+    def _on_save_current(self) -> None:
+        """Salva a correção atual na biblioteca sem fechar a janela."""
+        correction = self._store_current()
+        if correction is None:
+            return
+        self._plot(correction)
+        current = correction.name
+        self._reload_combo()
+        index = self.select_combo.findText(current)
+        if index >= 0:
+            self.select_combo.setCurrentIndex(index)
+        self.status_label.setText(
+            f"Correção '{current}' salva na biblioteca "
+            f"({len(self.corrections)} no total)."
         )
 
     def _on_compute(self) -> None:
@@ -1557,16 +1686,24 @@ class CorrectionDialog(QDialog):
         self.canvas.draw()
 
     def _on_accept(self) -> None:
-        """Valida e armazena a correção antes de fechar."""
-        try:
-            self.correction = self._build_correction()
-        except ValueError as exc:
-            QMessageBox.warning(self, "Correção do Instrumento", str(exc))
-            return
-        logger.info(
-            "Correção do instrumento definida (R nominal = %s).",
-            format_engineering(self.correction.r_nominal, "Ω"),
+        """Salva a correção atual (se preenchida) e fecha.
+
+        Se a janela estiver em branco mas já houver correções na
+        biblioteca, fecha mantendo-as (permite apenas remover/editar).
+        """
+        has_data = bool(self.table.get_rows()) or bool(
+            self.r_nominal_edit.text().strip()
         )
+        if has_data:
+            if self._store_current() is None:
+                return
+        elif not self.corrections:
+            QMessageBox.warning(
+                self,
+                "Correção do Instrumento",
+                "Insira os dados de ao menos uma correção.",
+            )
+            return
         self.accept()
 
 
@@ -2835,8 +2972,8 @@ class MainWindow(QMainWindow):
         self.kk_results: dict[str, kk_module.KKResult] = {}
         #: Resultados de ajuste de circuito por medição.
         self.fit_results: dict[str, circuitos.FitResult] = {}
-        #: Correção do instrumento configurada (ou None).
-        self.correction: Optional[InstrumentCorrection] = None
+        #: Biblioteca de correções do instrumento (``{nome: correção}``).
+        self.corrections: dict[str, InstrumentCorrection] = {}
         #: Janela de simulação do módulo FV (criada sob demanda).
         self._simulation_dialog: Optional[PVSimulationDialog] = None
         #: Janelas do criador de gráficos abertas.
@@ -3161,7 +3298,11 @@ class MainWindow(QMainWindow):
         )
 
         self.action_apply_correction = QAction(
-            "Aplicar correção às medições marcadas", self
+            "Aplicar correção às medições marcadas…", self
+        )
+        self.action_apply_correction.setToolTip(
+            "Escolhe uma correção da biblioteca e a aplica às medições "
+            "marcadas (as demais ficam sem correção)."
         )
         self.action_apply_correction.triggered.connect(
             self._apply_correction
@@ -3631,24 +3772,32 @@ class MainWindow(QMainWindow):
         self.circuit_tab.run_fit()
 
     def _open_correction_dialog(self) -> None:
-        """Abre a janela de Correção do Instrumento."""
-        dialog = CorrectionDialog(self, self.correction)
+        """Abre a janela de Correção do Instrumento (biblioteca)."""
+        dialog = CorrectionDialog(self, self.corrections)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.correction = dialog.correction
-            self.show_status(
-                "Correção do instrumento definida com "
-                f"{self.correction.n_points} pontos "
-                f"(R nominal = "
-                f"{format_engineering(self.correction.r_nominal, 'Ω')})."
-            )
+            self.corrections = dialog.corrections
+            if self.corrections:
+                names = ", ".join(self.corrections)
+                self.show_status(
+                    f"{len(self.corrections)} correção(ões) na "
+                    f"biblioteca: {names}."
+                )
+            else:
+                self.show_status("Nenhuma correção configurada.")
 
     def _apply_correction(self) -> None:
-        """Aplica a correção às medições marcadas (gera cópias)."""
-        if self.correction is None:
+        """Aplica uma correção escolhida às medições marcadas.
+
+        As amostras que não precisam de correção simplesmente não são
+        corrigidas (basta não aplicar); para as demais, escolhe-se qual
+        correção da biblioteca usar.  As versões corrigidas são
+        adicionadas à lista como novas medições.
+        """
+        if not self.corrections:
             QMessageBox.information(
                 self,
                 "Correção do instrumento",
-                "Configure primeiro a correção em "
+                "Configure primeiro ao menos uma correção em "
                 "Análise → Correção do Instrumento…",
             )
             return
@@ -3657,24 +3806,47 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Correção do instrumento",
-                "Marque ao menos uma medição na lista lateral.",
+                "Marque na lista lateral as medições que precisam de "
+                "correção (as que não precisam, deixe desmarcadas).",
             )
             return
+
+        names = list(self.corrections)
+        if len(names) == 1:
+            chosen = names[0]
+        else:
+            chosen, ok = QInputDialog.getItem(
+                self,
+                "Aplicar correção",
+                "Correção a aplicar nas medições marcadas:",
+                names,
+                0,
+                False,
+            )
+            if not ok or not chosen:
+                return
+        correction = self.corrections[chosen]
+
         applied = 0
+        skipped = 0
         for measurement in measurements:
             if measurement.corrected:
                 logger.info(
                     "Medição '%s' já corrigida; ignorada.",
                     measurement.name,
                 )
+                skipped += 1
                 continue
-            corrected = self.correction.apply(measurement)
+            corrected = correction.apply(measurement)
             self.add_measurement(corrected, checked=False)
             applied += 1
-        self.show_status(
-            f"Correção aplicada a {applied} medição(ões); as versões "
-            "corrigidas foram adicionadas à lista."
+        message = (
+            f"Correção '{chosen}' aplicada a {applied} medição(ões); "
+            "as versões corrigidas foram adicionadas à lista."
         )
+        if skipped:
+            message += f" {skipped} já estava(m) corrigida(s)."
+        self.show_status(message)
 
     # -- Edição -------------------------------------------------------------
     def _paste_into_table(self) -> None:
@@ -3830,7 +4002,7 @@ class MainWindow(QMainWindow):
                     for name, fit in self.fit_results.items()
                     if name in names
                 ],
-                correction=self.correction,
+                corrections=list(self.corrections.values()),
                 observations=dialog.observations(),
             )
         except (OSError, ValueError) as exc:
