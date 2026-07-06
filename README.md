@@ -15,7 +15,12 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   - Colagem com **Ctrl+V** a partir do Excel, do Metrohm NOVA ou de
     arquivos TXT, com detecção automática de delimitadores (tabulação,
     vírgula, ponto e vírgula, espaços) e de vírgula decimal;
-  - Botão **Importar** para arquivos CSV, TXT, XLSX e ODS;
+  - Botão **Importar** para arquivos CSV, TXT, XLSX e ODS. Arquivos
+    que contêm várias medições identificadas por uma coluna de nome
+    (``Medição``, gerada pela exportação CSV/Excel do próprio
+    software) são reconhecidos: o programa pergunta se deve recriar
+    cada medição separadamente na lista lateral, restaurando a sessão
+    como estava;
   - Colunas: `Frequência (Hz)`, `Z' (Ω)`, `-Z'' (Ω)`, `|Z| (Ω)`,
     `Fase (°)`, `Tensão (V)` e `Corrente (A)` — as colunas ausentes são
     calculadas automaticamente em cascata: `Tensão` e `Corrente` geram

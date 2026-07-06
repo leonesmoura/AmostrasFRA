@@ -1004,6 +1004,234 @@ def load_table_from_file(path: str | Path) -> list[list[Optional[float]]]:
     return load_table_from_file_ex(path)[0]
 
 
+#: Padrões (regex, minúsculas) de cabeçalho da coluna de nome/medição.
+_NAME_PATTERNS: tuple[str, ...] = (
+    r"medi", r"amostra", r"sample", r"measurement", r"curva",
+    r"esp[eé]cime", r"\bnome\b", r"\bname\b", r"\bid\b", r"r[oó]tulo",
+    r"label",
+)
+
+
+def _detect_name_column(header_tokens: Sequence[str]) -> Optional[int]:
+    """Índice da coluna de nome/medição no cabeçalho, se houver.
+
+    Uma coluna só é considerada de nome se casar um dos
+    :data:`_NAME_PATTERNS` e NÃO casar nenhum padrão de coluna
+    numérica (frequência, Z', |Z|, fase, tensão, corrente).
+    """
+    for index, token in enumerate(header_tokens):
+        lowered = str(token).strip().lower()
+        if not lowered:
+            continue
+        if _match_header_column(lowered) is not None:
+            continue
+        for pattern in _NAME_PATTERNS:
+            if re.search(pattern, lowered):
+                return index
+    return None
+
+
+def _split_header_and_data(
+    raw: list[list[str]],
+) -> tuple[Optional[list[str]], list[list[str]]]:
+    """Separa o cabeçalho das linhas de dados (tokens de texto).
+
+    O cabeçalho é a última linha não numérica antes da primeira linha
+    de dados (ignora linhas de título acima do cabeçalho).
+    """
+    header: Optional[list[str]] = None
+    data: list[list[str]] = []
+    data_started = False
+    for tokens in raw:
+        parsed = [parse_number(tok) for tok in tokens]
+        if any(v is not None for v in parsed):
+            data_started = True
+            data.append(tokens)
+        elif not data_started and any(str(t).strip() for t in tokens):
+            header = tokens
+    return header, data
+
+
+def _dataframe_to_raw(df: pd.DataFrame) -> list[list[str]]:
+    """Converte um DataFrame bruto em linhas de tokens de texto."""
+    return [
+        ["" if pd.isna(cell) else str(cell) for cell in record]
+        for record in df.itertuples(index=False, name=None)
+    ]
+
+
+def _raw_rows_and_header(
+    file_path: Path,
+) -> tuple[Optional[list[str]], list[list[str]]]:
+    """Lê um arquivo preservando os textos (para a coluna de nome).
+
+    Ao contrário de :func:`_read_rows_and_map`, mantém os tokens como
+    texto — essencial para recuperar o nome de cada medição, que não é
+    numérico.
+
+    Returns:
+        Tupla ``(cabeçalho, linhas_de_dados)`` com tokens de texto.  O
+        cabeçalho é a última linha não numérica antes dos dados (ou
+        ``None``).
+
+    Raises:
+        ValueError: Se a extensão não for suportada.
+    """
+    suffix = file_path.suffix.lower()
+    if suffix in {".csv", ".txt", ".dat"}:
+        text = _read_text_any_encoding(file_path)
+        delimiter = detect_delimiter(text)
+        raw = [
+            _split_line(line, delimiter)
+            for line in text.splitlines()
+            if line.strip()
+        ]
+    elif suffix in {".xlsx", ".xlsm", ".ods"}:
+        engine = "odf" if suffix == ".ods" else None
+        df = pd.read_excel(
+            file_path, header=None, dtype=object, engine=engine
+        )
+        raw = _dataframe_to_raw(df)
+    else:
+        raise ValueError(
+            f"Extensão de arquivo não suportada: '{suffix}'. Use CSV, "
+            "TXT, XLSX ou ODS."
+        )
+    return _split_header_and_data(raw)
+
+
+#: Planilhas de metadados ignoradas ao importar um Excel exportado.
+_METADATA_SHEETS: frozenset[str] = frozenset(
+    {"resumo", "ajustes", "kramers-kronig"}
+)
+
+
+def _measurements_from_excel_sheets(
+    file_path: Path,
+) -> list[Measurement]:
+    """Reconstrói medições de um Excel com uma planilha por medição.
+
+    Reconhece o formato da exportação do AMOSTRAS FRA (planilha
+    ``Resumo`` + uma planilha por medição).  Retorna lista vazia se o
+    arquivo não seguir esse formato.
+    """
+    suffix = file_path.suffix.lower()
+    engine = "odf" if suffix == ".ods" else None
+    sheets = pd.read_excel(
+        file_path, sheet_name=None, header=None, dtype=object,
+        engine=engine,
+    )
+    if not any(
+        name.strip().lower() == "resumo" for name in sheets
+    ):
+        return []
+
+    measurements: list[Measurement] = []
+    for sheet_name, df in sheets.items():
+        if sheet_name.strip().lower() in _METADATA_SHEETS:
+            continue
+        header, data = _split_header_and_data(_dataframe_to_raw(df))
+        if header is None or not data:
+            continue
+        column_map = map_header_to_columns(header)
+        parsed = [[parse_number(tok) for tok in row] for row in data]
+        canonical = arrange_rows_to_canonical(parsed, column_map)
+        try:
+            measurements.append(
+                _measurement_from_canonical(sheet_name, canonical)
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Planilha '%s' ignorada na importação: %s",
+                sheet_name,
+                exc,
+            )
+    return measurements
+
+
+def _measurement_from_canonical(
+    name: str, canonical_rows: list[list[Optional[float]]]
+) -> Measurement:
+    """Cria uma :class:`Measurement` a partir de linhas canônicas."""
+    return Measurement.from_components(
+        name=name,
+        frequency=[r[COL_FREQ] for r in canonical_rows],
+        z_real=[r[COL_ZREAL] for r in canonical_rows],
+        minus_z_imag=[r[COL_MINUS_ZIMAG] for r in canonical_rows],
+        magnitude=[r[COL_ZMOD] for r in canonical_rows],
+        phase_deg=[r[COL_PHASE] for r in canonical_rows],
+        voltage=[r[COL_VOLT] for r in canonical_rows],
+        current=[r[COL_CURR] for r in canonical_rows],
+    )
+
+
+def load_measurements_from_file(path: str | Path) -> list[Measurement]:
+    """Lê um arquivo com várias medições identificadas por nome.
+
+    Reconhece uma coluna de nome/medição no cabeçalho (por exemplo,
+    ``Medição``, gerada pela exportação CSV do AMOSTRAS FRA) e retorna
+    uma :class:`Measurement` por valor distinto dessa coluna,
+    preservando a ordem de aparição.
+
+    Se o arquivo **não** tiver coluna de nome, retorna uma lista vazia
+    (o chamador deve tratá-lo como tabela única).
+
+    Args:
+        path: Caminho do arquivo (CSV, TXT, XLSX ou ODS).
+
+    Returns:
+        Lista de medições (vazia se não houver coluna de nome).
+
+    Raises:
+        ValueError: Se a extensão não for suportada ou um grupo não
+            formar uma medição válida.
+        OSError: Se o arquivo não puder ser lido.
+    """
+    file_path = Path(path)
+    if file_path.suffix.lower() in {".xlsx", ".xlsm", ".ods"}:
+        # Exportação Excel: uma planilha por medição.
+        sheet_measurements = _measurements_from_excel_sheets(file_path)
+        if sheet_measurements:
+            return sheet_measurements
+
+    header, data = _raw_rows_and_header(file_path)
+    if header is None:
+        return []
+    name_col = _detect_name_column(header)
+    if name_col is None:
+        return []
+
+    column_map = map_header_to_columns(header)
+    grouped: "dict[str, list[list[Optional[float]]]]" = {}
+    order: list[str] = []
+    for tokens in data:
+        raw_name = (
+            str(tokens[name_col]).strip()
+            if name_col < len(tokens)
+            else ""
+        )
+        name = raw_name or "Medição"
+        parsed = [parse_number(tok) for tok in tokens]
+        if name not in grouped:
+            grouped[name] = []
+            order.append(name)
+        grouped[name].append(parsed)
+
+    measurements: list[Measurement] = []
+    for name in order:
+        canonical = arrange_rows_to_canonical(grouped[name], column_map)
+        measurements.append(
+            _measurement_from_canonical(name, canonical)
+        )
+    logger.info(
+        "Importadas %d medição(ões) do arquivo '%s': %s.",
+        len(measurements),
+        file_path.name,
+        ", ".join(m.name for m in measurements),
+    )
+    return measurements
+
+
 def _read_text_any_encoding(file_path: Path) -> str:
     """Lê texto detectando UTF-8, UTF-16 (com/sem BOM) e Latin-1.
 

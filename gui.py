@@ -747,7 +747,13 @@ class DataEntryPanel(QWidget):
 
     # ------------------------------------------------------------------
     def _on_import_clicked(self) -> None:
-        """Abre o seletor de arquivos e importa os dados."""
+        """Abre o seletor de arquivos e importa os dados.
+
+        Se o arquivo contiver várias medições identificadas por nome
+        (coluna ``Medição``, gerada pela exportação CSV/Excel do
+        AMOSTRAS FRA), oferece importá-las como medições separadas na
+        lista lateral; caso contrário, carrega os dados na tabela.
+        """
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Importar dados",
@@ -757,6 +763,39 @@ class DataEntryPanel(QWidget):
         )
         if not path:
             return
+
+        multi: list[Measurement] = []
+        try:
+            multi = util.load_measurements_from_file(path)
+        except (ValueError, OSError, ImportError) as exc:
+            logger.warning(
+                "Falha ao detectar múltiplas medições em '%s': %s",
+                path,
+                exc,
+            )
+
+        if len(multi) >= 2:
+            names = ", ".join(m.name for m in multi)
+            answer = QMessageBox.question(
+                self,
+                "Importar dados",
+                f"O arquivo contém {len(multi)} medições:\n{names}\n\n"
+                "Importar como medições separadas na lista lateral?\n"
+                "(Escolha \"Não\" para carregar tudo na tabela.)",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                for measurement in multi:
+                    self.measurementCreated.emit(measurement)
+                logger.info(
+                    "Importadas %d medições separadas de '%s'.",
+                    len(multi),
+                    path,
+                )
+                return
+
         try:
             rows = util.load_table_from_file(path)
         except (ValueError, OSError, ImportError) as exc:
