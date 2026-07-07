@@ -19,7 +19,7 @@ Componentes:
 from __future__ import annotations
 
 import logging
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
@@ -647,8 +647,18 @@ class DataEntryPanel(QWidget):
     #: Emitido ao atualizar a medição selecionada com dados da tabela.
     measurementUpdated = Signal(object)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    #: Rótulo do item "sem correção" no seletor de correção.
+    _NO_CORRECTION = "Sem correção"
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        corrections_provider: Optional[
+            "Callable[[], dict[str, InstrumentCorrection]]"
+        ] = None,
+    ) -> None:
         super().__init__(parent)
+        self._corrections_provider = corrections_provider
         self.table = DataTable(self)
 
         self.import_button = QPushButton("Importar…", self)
@@ -726,6 +736,16 @@ class DataEntryPanel(QWidget):
             self.paste_format_combo.currentData()
         )
 
+        self.correction_combo = QComboBox(self)
+        self.correction_combo.setToolTip(
+            "Correção do instrumento a aplicar ao criar a medição. "
+            "Escolha \"Sem correção\" para medições que não precisam "
+            "de correção; as demais correções vêm da biblioteca em "
+            "Análise → Correção do Instrumento…"
+        )
+        self.correction_combo.setMinimumWidth(150)
+        self.refresh_corrections()
+
         buttons = QHBoxLayout()
         buttons.addWidget(self.import_button)
         buttons.addWidget(self.add_rows_button)
@@ -733,6 +753,8 @@ class DataEntryPanel(QWidget):
         buttons.addWidget(QLabel("Colar sem cabeçalho como:", self))
         buttons.addWidget(self.paste_format_combo)
         buttons.addStretch(1)
+        buttons.addWidget(QLabel("Correção:", self))
+        buttons.addWidget(self.correction_combo)
         buttons.addWidget(self.add_measurement_button)
         buttons.addWidget(self.update_measurement_button)
 
@@ -744,6 +766,37 @@ class DataEntryPanel(QWidget):
     def _on_paste_format_changed(self, _index: int) -> None:
         """Atualiza o mapeamento da colagem posicional."""
         self.table.set_paste_mapping(self.paste_format_combo.currentData())
+
+    def refresh_corrections(self) -> None:
+        """Repovoa o seletor de correção com a biblioteca atual.
+
+        Preserva a seleção pelo nome, quando ainda existir.
+        """
+        previous = self.correction_combo.currentData()
+        corrections = (
+            self._corrections_provider()
+            if self._corrections_provider is not None
+            else {}
+        )
+        self.correction_combo.blockSignals(True)
+        try:
+            self.correction_combo.clear()
+            self.correction_combo.addItem(self._NO_CORRECTION, None)
+            for name in corrections:
+                self.correction_combo.addItem(name, name)
+            if previous is not None:
+                index = self.correction_combo.findData(previous)
+                if index >= 0:
+                    self.correction_combo.setCurrentIndex(index)
+        finally:
+            self.correction_combo.blockSignals(False)
+
+    def _selected_correction(self) -> Optional[InstrumentCorrection]:
+        """Correção escolhida no seletor (ou ``None``)."""
+        name = self.correction_combo.currentData()
+        if name is None or self._corrections_provider is None:
+            return None
+        return self._corrections_provider().get(name)
 
     # ------------------------------------------------------------------
     def _on_import_clicked(self) -> None:
@@ -854,7 +907,11 @@ class DataEntryPanel(QWidget):
         self.table.set_rows(rows)
 
     def _on_add_measurement(self) -> None:
-        """Cria uma medição a partir da tabela (pede o nome)."""
+        """Cria uma medição a partir da tabela (pede o nome).
+
+        Aplica a correção do instrumento escolhida no seletor, se
+        houver — assim a medição já entra corrigida na lista.
+        """
         name, ok = QInputDialog.getText(
             self,
             "Nova medição",
@@ -862,11 +919,26 @@ class DataEntryPanel(QWidget):
         )
         if not ok or not name.strip():
             return
+        clean_name = name.strip()
         try:
-            measurement = self.build_measurement(name.strip())
+            measurement = self.build_measurement(clean_name)
         except ValueError as exc:
             QMessageBox.warning(self, "Nova medição", str(exc))
             return
+        correction = self._selected_correction()
+        if correction is not None:
+            try:
+                measurement = correction.apply(
+                    measurement, new_name=clean_name
+                )
+            except (ValueError, RuntimeError) as exc:
+                QMessageBox.warning(
+                    self,
+                    "Correção do instrumento",
+                    f"Não foi possível aplicar a correção "
+                    f"'{correction.name}':\n{exc}",
+                )
+                return
         self.measurementCreated.emit(measurement)
 
     def _on_update_measurement(self) -> None:
@@ -2993,7 +3065,9 @@ class MainWindow(QMainWindow):
         """Cria a área central com as abas de dados e gráficos."""
         self.tabs = QTabWidget(self)
 
-        self.data_panel = DataEntryPanel(self)
+        self.data_panel = DataEntryPanel(
+            self, corrections_provider=lambda: self.corrections
+        )
         self.data_panel.measurementCreated.connect(self.add_measurement)
         self.data_panel.measurementUpdated.connect(
             self._update_selected_measurement
@@ -3776,6 +3850,7 @@ class MainWindow(QMainWindow):
         dialog = CorrectionDialog(self, self.corrections)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.corrections = dialog.corrections
+            self.data_panel.refresh_corrections()
             if self.corrections:
                 names = ", ".join(self.corrections)
                 self.show_status(

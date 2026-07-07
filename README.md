@@ -52,7 +52,10 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   aplicar às medições marcadas — assim, amostras medidas com um
   instrumento que não precisa de correção ficam sem correção, enquanto
   outras recebem a correção adequada (NumPy vetorizado, interpolação em
-  log-frequência).
+  log-frequência). Na aba **Dados**, há um seletor **"Correção:"** ao
+  lado de "Adicionar como medição": ao criar a medição, aplica-se
+  diretamente a correção escolhida (ou "Sem correção"), sem passos
+  adicionais.
 - **Validação de Kramers-Kronig** com todas as frequências medidas
   (nenhuma é eliminada), Valor Principal de Cauchy tratado analiticamente
   (singularidade removível via L'Hôpital), reconstrução das partes real e
