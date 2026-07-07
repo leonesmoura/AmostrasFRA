@@ -943,12 +943,31 @@ class DataEntryPanel(QWidget):
         self.measurementCreated.emit(measurement)
 
     def _on_update_measurement(self) -> None:
-        """Atualiza a medição selecionada com os dados da tabela."""
+        """Atualiza a medição selecionada com os dados da tabela.
+
+        Aplica a correção do instrumento escolhida no seletor, se
+        houver — assim a medição selecionada passa a ser a versão
+        corrigida.
+        """
         try:
             measurement = self.build_measurement("__temporario__")
         except ValueError as exc:
             QMessageBox.warning(self, "Atualizar medição", str(exc))
             return
+        correction = self._selected_correction()
+        if correction is not None:
+            try:
+                measurement = correction.apply(
+                    measurement, new_name="__temporario__"
+                )
+            except (ValueError, RuntimeError) as exc:
+                QMessageBox.warning(
+                    self,
+                    "Correção do instrumento",
+                    f"Não foi possível aplicar a correção "
+                    f"'{correction.name}':\n{exc}",
+                )
+                return
         self.measurementUpdated.emit(measurement)
 
 
@@ -3621,22 +3640,30 @@ class MainWindow(QMainWindow):
     def _update_selected_measurement(
         self, template: Measurement
     ) -> None:
-        """Atualiza a medição selecionada com os dados da tabela."""
+        """Atualiza a medição selecionada com os dados da tabela.
+
+        O estado de correção (``corrected`` e a nota) vem do
+        ``template``, refletindo a correção escolhida no seletor da
+        aba Dados.
+        """
         item = self._selected_list_item()
         if item is None:
             return
         name = item.text()
         updated = template.copy(new_name=name)
-        old = self.measurements.get(name)
-        if old is not None:
-            updated.corrected = old.corrected
-            updated.notes = old.notes
         self.measurements[name] = updated
         self.kk_results.pop(name, None)
         self.fit_results.pop(name, None)
-        logger.info("Medição '%s' atualizada pela tabela.", name)
+        logger.info(
+            "Medição '%s' atualizada pela tabela (corrigida=%s).",
+            name,
+            updated.corrected,
+        )
         self.refresh_plots()
-        self.show_status(f"Medição '{name}' atualizada.")
+        status = f"Medição '{name}' atualizada."
+        if updated.corrected:
+            status += " Correção do instrumento aplicada."
+        self.show_status(status)
 
     def _load_selected_into_table(self) -> None:
         """Carrega a medição selecionada na tabela de dados."""
