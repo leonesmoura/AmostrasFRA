@@ -80,13 +80,20 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
 - **Conexão serial** (Ferramentas → Conexão Serial…): recebe pontos de
   medição de um sistema embarcado (Arduino, ESP32, STM32, …) por porta
   serial (COMs detectadas automaticamente; baud padrão **115200**). O
-  firmware envia uma linha por ponto — por exemplo
-  `frequência,tensão,corrente,fase\n` — e o software interpreta os
-  valores (separador vírgula/ponto e vírgula/tabulação/espaço, vírgula
-  decimal aceita), calcula `|Z| = V/I` e permite **criar uma medição**
-  ou **enviar os pontos à tabela de dados**. Formatos suportados:
-  Frequência + (Tensão, Corrente, Fase), (Z', -Z'') ou (|Z|, Fase).
-  Usa a `QtSerialPort` embutida no PySide6 (sem dependência extra).
+  firmware envia **uma linha por ponto** (uma frequência por linha), em
+  um de dois formatos:
+  - **Posicional**: `10000,10.2,0.00012,-80.2` (ordem definida no
+    seletor — Freq + Tensão/Corrente/Fase, ou Z'/-Z'', ou |Z|/Fase);
+  - **Rotulado** (auto-descritivo, ordem livre):
+    `f=10000 V=10,2 I=0,00012 pha=-80,2` — cada valor com seu rótulo
+    (`f`, `V`, `I`, `pha`, `|z|`, `z'`, `z''`), reconhecido
+    automaticamente.
+
+  Separadores vírgula/ponto e vírgula/tabulação/espaço e vírgula
+  decimal são aceitos, e um marcador inicial (`#`, `$`, `>`) é
+  ignorado. O software calcula `|Z| = V/I` e permite **criar uma
+  medição** ou **enviar os pontos à tabela de dados**. Usa a
+  `QtSerialPort` embutida no PySide6 (sem dependência extra).
 - **Curva I-V do módulo** (aba "Curva I-V"): tipo de entrada dedicado,
   apenas com tensão e corrente (a potência ``P = V·I`` é calculada
   automaticamente). Suporta digitação, colagem e importação

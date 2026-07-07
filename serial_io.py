@@ -4,16 +4,28 @@ Permite receber pontos de medição de um sistema embarcado (Arduino,
 ESP32, STM32, etc.) por uma porta serial (USB/UART).  Usa a
 ``QtSerialPort`` embutida no PySide6 — não requer dependências extras.
 
-Protocolo esperado (texto): uma linha por ponto de dados, com os
-valores separados por vírgula, ponto e vírgula, tabulação ou espaços,
-terminada por ``\\n``.  Vírgula decimal é aceita.  Exemplo (frequência,
-tensão, corrente, fase)::
+O software aceita **dois formatos** de linha (um ponto por linha,
+terminada por ``\\n``; vírgula decimal é aceita):
 
-    1000,1.0,0.01,-30
-    100,1.0,0.005,-45
+* **Posicional** — só os valores, na ordem definida na interface::
 
-Cada linha vira uma linha de dados; o mapeamento das colunas é
-definido pelo formato escolhido na interface.
+      1000,1.0,0.01,-30
+      100,1.0,0.005,-45
+
+* **Rotulado** (auto-descritivo, ordem livre) — cada valor com um
+  rótulo ``chave=valor``::
+
+      f=10000 V=10,2 I=0,00012 pha=-80,2
+
+  Rótulos reconhecidos (sem distinção de maiúsculas): ``f``/``freq``
+  (frequência), ``v``/``tensao`` (tensão), ``i``/``corrente``
+  (corrente), ``pha``/``fase`` (fase), ``|z|``/``zmod``,
+  ``z'``/``zre`` e ``z''``/``zim``.  As chaves podem ser separadas
+  por espaço, tabulação ou ``;``.
+
+Um marcador opcional no início da linha (``#``, ``$``, ``>`` ou
+``*``) é ignorado — útil para o firmware distinguir os dados das
+mensagens de depuração.
 
 A camada de parsing (:class:`SerialLineParser`) é independente do
 transporte e totalmente testável sem hardware.
@@ -22,14 +34,87 @@ transporte e totalmente testável sem hardware.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
 
 import util
+from util import (
+    COL_CURR,
+    COL_FREQ,
+    COL_MINUS_ZIMAG,
+    COL_PHASE,
+    COL_VOLT,
+    COL_ZMOD,
+    COL_ZREAL,
+    COLUMN_LABELS,
+)
 
 logger = logging.getLogger(__name__)
+
+#: Número de colunas canônicas (Freq, Z', -Z'', |Z|, Fase, V, I).
+_N_COLS: int = len(COLUMN_LABELS)
+
+#: Mapeamento posicional padrão (frequência, tensão, corrente, fase).
+DEFAULT_MAPPING: tuple[int, ...] = (
+    COL_FREQ, COL_VOLT, COL_CURR, COL_PHASE,
+)
+
+#: Chaves de rótulo (minúsculas) → coluna canônica.
+_LABEL_TO_COLUMN: dict[str, int] = {
+    "f": COL_FREQ, "freq": COL_FREQ, "frequencia": COL_FREQ,
+    "frequência": COL_FREQ, "frequency": COL_FREQ, "hz": COL_FREQ,
+    "w": COL_FREQ,
+    "v": COL_VOLT, "u": COL_VOLT, "volt": COL_VOLT, "tensao": COL_VOLT,
+    "tensão": COL_VOLT, "voltage": COL_VOLT, "vrms": COL_VOLT,
+    "i": COL_CURR, "corrente": COL_CURR, "current": COL_CURR,
+    "curr": COL_CURR, "amp": COL_CURR, "irms": COL_CURR,
+    "pha": COL_PHASE, "phase": COL_PHASE, "fase": COL_PHASE,
+    "phi": COL_PHASE, "deg": COL_PHASE, "ang": COL_PHASE,
+    "angulo": COL_PHASE, "ângulo": COL_PHASE, "θ": COL_PHASE,
+    "zr": COL_ZREAL, "zre": COL_ZREAL, "z'": COL_ZREAL, "re": COL_ZREAL,
+    "zi": COL_MINUS_ZIMAG, "zim": COL_MINUS_ZIMAG,
+    "z''": COL_MINUS_ZIMAG, "-z''": COL_MINUS_ZIMAG, "im": COL_MINUS_ZIMAG,
+    "zmod": COL_ZMOD, "|z|": COL_ZMOD, "mag": COL_ZMOD, "z": COL_ZMOD,
+    "modulo": COL_ZMOD, "módulo": COL_ZMOD, "abs": COL_ZMOD,
+}
+
+#: Caracteres de marcador de início de linha ignorados.
+_MARKER_CHARS: str = "#$>*"
+
+#: Regex de um par ``chave=valor`` (aceita ``=`` ou ``:``).
+_PAIR_RE = re.compile(
+    r"([^\s=:;]+)\s*[=:]\s*([+\-]?\d[\d.,eE+\-]*)"
+)
+
+
+def _strip_marker(line: str) -> str:
+    """Remove um marcador de início de linha (``#``, ``$``, ...)."""
+    return re.sub(rf"^\s*[{re.escape(_MARKER_CHARS)}]+\s*", "", line)
+
+
+def parse_labeled(line: str) -> Optional[dict[int, float]]:
+    """Interpreta uma linha rotulada ``chave=valor``.
+
+    Args:
+        line: Linha de texto (o marcador inicial é removido).
+
+    Returns:
+        Dicionário ``{coluna_canônica: valor}`` com os pares
+        reconhecidos, ou ``None`` se nenhum rótulo conhecido for
+        encontrado.
+    """
+    result: dict[int, float] = {}
+    for key, raw_value in _PAIR_RE.findall(_strip_marker(line)):
+        column = _LABEL_TO_COLUMN.get(key.strip().lower())
+        if column is None:
+            continue
+        value = util.parse_number(raw_value)
+        if value is not None:
+            result[column] = value
+    return result or None
 
 #: Velocidades (baud) comuns; 115200 é o padrão do projeto.
 COMMON_BAUD_RATES: tuple[int, ...] = (
@@ -60,32 +145,44 @@ def list_serial_ports() -> list[tuple[str, str]]:
 
 
 class SerialLineParser:
-    """Acumula bytes recebidos e extrai linhas de dados numéricos.
+    """Acumula bytes recebidos e extrai linhas de dados canônicas.
 
     Mantém um buffer de texto; a cada chamada de :meth:`feed`, separa
     as linhas completas (terminadas em ``\\n``) e interpreta cada uma
-    em uma lista de valores (``float`` ou ``None``).  Linhas sem
-    nenhum número (cabeçalhos, mensagens de log do firmware) são
-    ignoradas.  Uma linha parcial permanece no buffer até completar.
+    em uma linha canônica de 7 colunas (Freq, Z', -Z'', |Z|, Fase,
+    Tensão, Corrente).
+
+    Linhas **rotuladas** (``f=... V=...``) são reconhecidas
+    automaticamente e mapeadas pelos rótulos; as demais usam o
+    mapeamento posicional (:attr:`mapping`).  Linhas sem nenhum número
+    (cabeçalhos, mensagens de log do firmware) são ignoradas.  Uma
+    linha parcial permanece no buffer até completar.
     """
 
     _MAX_BUFFER: int = 64 * 1024
 
-    def __init__(self) -> None:
+    def __init__(
+        self, mapping: tuple[int, ...] = DEFAULT_MAPPING
+    ) -> None:
         self._buffer: str = ""
+        self._mapping: tuple[int, ...] = tuple(mapping)
+
+    def set_mapping(self, mapping: tuple[int, ...]) -> None:
+        """Define o mapeamento posicional (formato sem rótulos)."""
+        self._mapping = tuple(mapping)
 
     def reset(self) -> None:
         """Descarta qualquer dado parcial no buffer."""
         self._buffer = ""
 
     def feed(self, data: bytes) -> list[list[Optional[float]]]:
-        """Alimenta o parser com bytes e retorna as linhas completas.
+        """Alimenta o parser com bytes e retorna as linhas canônicas.
 
         Args:
             data: Bytes recebidos da porta serial.
 
         Returns:
-            Lista de linhas de dados (cada uma com valores ``float`` ou
+            Lista de linhas canônicas (7 colunas cada, ``float`` ou
             ``None``).  Vazia se ainda não houver linha completa com
             números.
         """
@@ -106,25 +203,37 @@ class SerialLineParser:
                 rows.append(parsed)
         return rows
 
-    @staticmethod
-    def parse_line(line: str) -> Optional[list[Optional[float]]]:
-        """Interpreta uma linha de texto em valores numéricos.
+    def parse_line(self, line: str) -> Optional[list[Optional[float]]]:
+        """Interpreta uma linha em uma linha canônica de 7 colunas.
 
         Args:
             line: Linha (sem o terminador).
 
         Returns:
-            Lista de valores, ou ``None`` se a linha não contiver
-            nenhum número.
+            Linha canônica (7 valores ``float``/``None``), ou ``None``
+            se a linha não contiver dados numéricos reconhecíveis.
         """
-        if not line.strip():
+        clean = _strip_marker(line)
+        if not clean.strip():
             return None
-        delimiter = util.detect_delimiter(line)
-        tokens = util._split_line(line, delimiter)
-        parsed = [util.parse_number(token) for token in tokens]
-        if not any(value is not None for value in parsed):
+
+        labeled = parse_labeled(clean)
+        if labeled is not None:
+            row: list[Optional[float]] = [None] * _N_COLS
+            for column, value in labeled.items():
+                row[column] = value
+            return row
+
+        delimiter = util.detect_delimiter(clean)
+        tokens = util._split_line(clean, delimiter)
+        values = [util.parse_number(token) for token in tokens]
+        if not any(value is not None for value in values):
             return None
-        return parsed
+        row = [None] * _N_COLS
+        for position, column in enumerate(self._mapping):
+            if position < len(values):
+                row[column] = values[position]
+        return row
 
 
 class SerialAcquisition(QObject):
@@ -132,7 +241,8 @@ class SerialAcquisition(QObject):
 
     Sinais:
         rowReceived(object): emitido para cada linha de dados
-            recebida, com a lista de valores (``float``/``None``).
+            recebida, já mapeada para as 7 colunas canônicas
+            (``float``/``None``).
         rawLineReceived(str): emitido com o texto bruto de cada linha
             (para o log da interface).
         opened(): emitido quando a porta é aberta com sucesso.
@@ -146,13 +256,21 @@ class SerialAcquisition(QObject):
     closed = Signal()
     errorOccurred = Signal(str)
 
-    def __init__(self, parent: Optional[QObject] = None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QObject] = None,
+        mapping: tuple[int, ...] = DEFAULT_MAPPING,
+    ) -> None:
         super().__init__(parent)
         self._port = QSerialPort(self)
-        self._parser = SerialLineParser()
+        self._parser = SerialLineParser(mapping)
         self._port.readyRead.connect(self._on_ready_read)
         self._port.errorOccurred.connect(self._on_error)
         self._pending_line: str = ""
+
+    def set_mapping(self, mapping: tuple[int, ...]) -> None:
+        """Define o mapeamento posicional (formato sem rótulos)."""
+        self._parser.set_mapping(mapping)
 
     # ------------------------------------------------------------------
     @property

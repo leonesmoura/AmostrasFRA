@@ -3,18 +3,24 @@
  * ---------------------------------------------------------
  * Modelo para Arduino / ESP32 / STM32 (framework Arduino).
  *
- * Envia uma linha por ponto de medicao pela porta serial, no formato
- * reconhecido pela janela "Conexao Serial" do software:
+ * Envia uma linha por ponto de medicao (uma frequencia por linha)
+ * pela porta serial. O software aceita DOIS formatos:
  *
- *     frequencia,tensao,corrente,fase\n
+ *   1) Posicional:  frequencia,tensao,corrente,fase\n
+ *      Ex.:  10000,10.2,0.00012,-80.2
+ *
+ *   2) Rotulado (auto-descritivo, ordem livre):
+ *          f=10000 V=10.2 I=0.00012 pha=-80.2\n
+ *      Rotulos: f/freq, V/tensao, I/corrente, pha/fase, |z|, z', z''.
  *
  * - Uma linha por ponto, terminada por '\n'.
- * - Valores separados por virgula (tambem aceita ';', tab ou espaco).
- * - Use ponto como separador decimal (o software tambem aceita virgula).
+ * - Separadores: virgula, ';', tab ou espaco. Decimal com '.' ou ','.
+ * - Um marcador inicial (#, $, >) e ignorado.
  *
- * No software: Ferramentas -> Conexao Serial..., selecione a porta,
- * baud 115200, formato "Frequencia, Tensao, Corrente, Fase" e conecte.
- * O |Z| = V/I e as demais colunas sao calculados automaticamente.
+ * Este exemplo usa o formato ROTULADO (recomendado: nao depende da
+ * ordem). No software: Ferramentas -> Conexao Serial..., selecione a
+ * porta, baud 115200 e conecte. O |Z| = V/I e as demais colunas sao
+ * calculados automaticamente.
  *
  * Substitua a funcao medir_ponto() pela sua aquisicao real (ADC,
  * detector de fase, ganho, etc.). Os valores abaixo sao apenas um
@@ -61,13 +67,14 @@ void loop() {
     float v, i, fase;
     medir_ponto(f, v, i, fase);
 
-    // Envia: frequencia,tensao,corrente,fase
+    // Envia (formato rotulado): f=... V=... I=... pha=...
+    Serial.print("f=");
     Serial.print(f, 4);
-    Serial.print(',');
+    Serial.print(" V=");
     Serial.print(v, 6);
-    Serial.print(',');
+    Serial.print(" I=");
     Serial.print(i, 8);
-    Serial.print(',');
+    Serial.print(" pha=");
     Serial.println(fase, 4);
 
     delay(200);  // ritmo de envio (ajuste conforme sua aquisicao)

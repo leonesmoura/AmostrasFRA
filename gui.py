@@ -1939,8 +1939,16 @@ class SerialDialog(QDialog):
         )
 
         self.format_combo = QComboBox(self)
+        self.format_combo.setToolTip(
+            "Ordem das colunas no formato posicional. Linhas rotuladas "
+            "(f=, V=, I=, pha=…) são reconhecidas automaticamente, "
+            "independentemente deste seletor."
+        )
         for label, mapping in self._FORMATS:
             self.format_combo.addItem(label, mapping)
+        self.format_combo.currentIndexChanged.connect(
+            self._on_format_changed
+        )
 
         self.connect_button = QPushButton("Conectar", self)
         self.connect_button.setCheckable(True)
@@ -1977,12 +1985,12 @@ class SerialDialog(QDialog):
         self.clear_button.clicked.connect(self._on_clear)
 
         hint = QLabel(
-            "Envie do embarcado uma linha por ponto, terminada por "
-            "\"\\n\", com os valores separados por vírgula, ponto e "
-            "vírgula, tabulação ou espaço (vírgula decimal é aceita). "
-            "Ex. (Arduino): "
-            "Serial.println(String(f)+\",\"+String(v)+\",\"+"
-            "String(i)+\",\"+String(fase));",
+            "Envie do embarcado uma linha por ponto (uma frequência por "
+            "linha), terminada por \"\\n\". Dois formatos são aceitos:\n"
+            "• Posicional (use o seletor abaixo): 10000,10.2,0.00012,-80.2\n"
+            "• Rotulado (ordem livre): f=10000 V=10,2 I=0,00012 pha=-80,2\n"
+            "Separadores vírgula/;/tab/espaço e vírgula decimal são "
+            "reconhecidos; um marcador inicial (#, $, >) é ignorado.",
             self,
         )
         hint.setWordWrap(True)
@@ -2027,7 +2035,12 @@ class SerialDialog(QDialog):
         layout.addWidget(self.status_label)
         layout.addWidget(button_box)
 
+        self._acq.set_mapping(self.format_combo.currentData())
         self.refresh_ports()
+
+    def _on_format_changed(self, _index: int) -> None:
+        """Atualiza o mapeamento posicional do parser."""
+        self._acq.set_mapping(self.format_combo.currentData())
 
     # -- Conexão ------------------------------------------------------------
     def refresh_ports(self) -> None:
@@ -2102,10 +2115,6 @@ class SerialDialog(QDialog):
         self.status_label.setText(f"Erro na porta serial: {message}")
 
     # -- Recepção -----------------------------------------------------------
-    def _current_mapping(self) -> tuple[int, ...]:
-        """Mapeamento de colunas do formato selecionado."""
-        return self.format_combo.currentData()
-
     def _on_raw_line(self, line: str) -> None:
         """Adiciona uma linha bruta ao log (com limite de tamanho)."""
         self.log_edit.appendPlainText(line)
@@ -2118,15 +2127,10 @@ class SerialDialog(QDialog):
             cursor.deleteChar()
 
     def _on_row_received(
-        self, values: list[Optional[float]]
+        self, canonical: list[Optional[float]]
     ) -> None:
-        """Mapeia uma linha recebida para as colunas canônicas."""
-        mapping = self._current_mapping()
-        canonical: list[Optional[float]] = [None] * len(COLUMN_LABELS)
-        for position, target in enumerate(mapping):
-            if position < len(values):
-                canonical[target] = values[position]
-        self._rows.append(canonical)
+        """Registra uma linha canônica recebida (já mapeada)."""
+        self._rows.append(list(canonical))
         self._append_preview_row(canonical)
         self.status_label.setText(
             f"Conectado a {self._acq.port_name}. "
