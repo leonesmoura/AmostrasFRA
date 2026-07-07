@@ -77,6 +77,16 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   - Resultados: parâmetros com incertezas (1σ), χ², χ² reduzido,
     RMSE e R²; os valores ajustados aparecem sob cada elemento no
     desenho do circuito.
+- **Conexão serial** (Ferramentas → Conexão Serial…): recebe pontos de
+  medição de um sistema embarcado (Arduino, ESP32, STM32, …) por porta
+  serial (COMs detectadas automaticamente; baud padrão **115200**). O
+  firmware envia uma linha por ponto — por exemplo
+  `frequência,tensão,corrente,fase\n` — e o software interpreta os
+  valores (separador vírgula/ponto e vírgula/tabulação/espaço, vírgula
+  decimal aceita), calcula `|Z| = V/I` e permite **criar uma medição**
+  ou **enviar os pontos à tabela de dados**. Formatos suportados:
+  Frequência + (Tensão, Corrente, Fase), (Z', -Z'') ou (|Z|, Fase).
+  Usa a `QtSerialPort` embutida no PySide6 (sem dependência extra).
 - **Curva I-V do módulo** (aba "Curva I-V"): tipo de entrada dedicado,
   apenas com tensão e corrente (a potência ``P = V·I`` é calculada
   automaticamente). Suporta digitação, colagem e importação
@@ -157,6 +167,7 @@ python AmostrasFRA.py
 | `circuitos.py`    | Modelos e ajuste de circuitos equivalentes           |
 | `exportacao.py`   | Exportação de imagens, Excel, CSV e relatório PDF    |
 | `graficos.py`     | Criador de gráficos com zoom de destaque (inset)     |
+| `serial_io.py`    | Conexão serial (QtSerialPort) e parsing dos pontos   |
 | `simulacao.py`    | Simulação animada do módulo FV (camadas e elétrons)  |
 | `util.py`         | Medições, parsing de dados, importação e logging     |
 

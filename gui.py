@@ -72,6 +72,7 @@ from PySide6.QtWidgets import (
 import circuitos
 import exportacao
 import kk as kk_module
+import serial_io
 import util
 from correcao import InstrumentCorrection
 from graficos import ChartBuilderDialog
@@ -1879,6 +1880,338 @@ class ReportDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# Conexão serial (dados do sistema embarcado)
+# ---------------------------------------------------------------------------
+class SerialDialog(QDialog):
+    """Janela "Conexão Serial".
+
+    Recebe pontos de medição de um sistema embarcado por porta serial
+    (padrão 115200 baud) e permite criar uma medição ou enviar os
+    pontos à tabela de dados.  Cada linha recebida é interpretada
+    conforme o formato escolhido (frequência, tensão, corrente, fase,
+    etc.).
+    """
+
+    #: Emitido ao criar uma medição a partir dos pontos recebidos.
+    measurementCreated = Signal(object)
+    #: Emitido ao enviar as linhas recebidas para a tabela de dados.
+    rowsToTable = Signal(object)
+
+    #: Formatos de linha aceitos: (rótulo, mapeamento de colunas).
+    _FORMATS: tuple[tuple[str, tuple[int, ...]], ...] = (
+        ("Frequência, Tensão, Corrente, Fase",
+         (COL_FREQ, COL_VOLT, COL_CURR, COL_PHASE)),
+        ("Frequência, Z', -Z''",
+         (COL_FREQ, COL_ZREAL, COL_MINUS_ZIMAG)),
+        ("Frequência, |Z|, Fase",
+         (COL_FREQ, COL_ZMOD, COL_PHASE)),
+    )
+    _MAX_LOG_LINES: int = 500
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Conexão Serial — dados do embarcado")
+        self.resize(920, 640)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+
+        self._acq = serial_io.SerialAcquisition(self)
+        self._acq.rowReceived.connect(self._on_row_received)
+        self._acq.rawLineReceived.connect(self._on_raw_line)
+        self._acq.opened.connect(self._on_opened)
+        self._acq.closed.connect(self._on_closed)
+        self._acq.errorOccurred.connect(self._on_error)
+
+        #: Linhas canônicas acumuladas (7 colunas).
+        self._rows: list[list[Optional[float]]] = []
+
+        # -- Conexão ------------------------------------------------------
+        self.port_combo = QComboBox(self)
+        self.port_combo.setMinimumWidth(220)
+        self.refresh_button = QPushButton("Atualizar portas", self)
+        self.refresh_button.clicked.connect(self.refresh_ports)
+
+        self.baud_combo = QComboBox(self)
+        self.baud_combo.setEditable(True)
+        for baud in serial_io.COMMON_BAUD_RATES:
+            self.baud_combo.addItem(str(baud), baud)
+        self.baud_combo.setCurrentText(
+            str(serial_io.DEFAULT_BAUD_RATE)
+        )
+
+        self.format_combo = QComboBox(self)
+        for label, mapping in self._FORMATS:
+            self.format_combo.addItem(label, mapping)
+
+        self.connect_button = QPushButton("Conectar", self)
+        self.connect_button.setCheckable(True)
+        self.connect_button.clicked.connect(self._toggle_connection)
+
+        # -- Prévia e log -------------------------------------------------
+        self.preview_table = QTableWidget(0, len(COLUMN_LABELS), self)
+        self.preview_table.setHorizontalHeaderLabels(list(COLUMN_LABELS))
+        self.preview_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.preview_table.verticalHeader().setVisible(True)
+        self.preview_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+
+        self.log_edit = QPlainTextEdit(self)
+        self.log_edit.setReadOnly(True)
+        self.log_edit.setMaximumHeight(150)
+        self.log_edit.setPlaceholderText(
+            "Linhas brutas recebidas pela porta serial aparecerão aqui."
+        )
+
+        self.status_label = QLabel("Desconectado.", self)
+        self.status_label.setWordWrap(True)
+
+        self.create_button = QPushButton("Criar medição", self)
+        self.create_button.clicked.connect(self._on_create_measurement)
+        self.to_table_button = QPushButton(
+            "Enviar para a tabela de dados", self
+        )
+        self.to_table_button.clicked.connect(self._on_send_to_table)
+        self.clear_button = QPushButton("Limpar pontos", self)
+        self.clear_button.clicked.connect(self._on_clear)
+
+        hint = QLabel(
+            "Envie do embarcado uma linha por ponto, terminada por "
+            "\"\\n\", com os valores separados por vírgula, ponto e "
+            "vírgula, tabulação ou espaço (vírgula decimal é aceita). "
+            "Ex. (Arduino): "
+            "Serial.println(String(f)+\",\"+String(v)+\",\"+"
+            "String(i)+\",\"+String(fase));",
+            self,
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #9a9a9a;")
+
+        # -- Layout -------------------------------------------------------
+        conn_row = QHBoxLayout()
+        conn_row.addWidget(QLabel("Porta:", self))
+        conn_row.addWidget(self.port_combo, 1)
+        conn_row.addWidget(self.refresh_button)
+        conn_row.addWidget(QLabel("Baud:", self))
+        conn_row.addWidget(self.baud_combo)
+        conn_row.addWidget(self.connect_button)
+
+        format_row = QHBoxLayout()
+        format_row.addWidget(QLabel("Formato dos dados:", self))
+        format_row.addWidget(self.format_combo, 1)
+
+        actions_row = QHBoxLayout()
+        actions_row.addWidget(self.create_button)
+        actions_row.addWidget(self.to_table_button)
+        actions_row.addWidget(self.clear_button)
+        actions_row.addStretch(1)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Close, self
+        )
+        button_box.rejected.connect(self.close)
+        button_box.button(
+            QDialogButtonBox.StandardButton.Close
+        ).clicked.connect(self.close)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(hint)
+        layout.addLayout(conn_row)
+        layout.addLayout(format_row)
+        layout.addWidget(QLabel("Pontos recebidos:", self))
+        layout.addWidget(self.preview_table, 1)
+        layout.addWidget(QLabel("Log da porta serial:", self))
+        layout.addWidget(self.log_edit)
+        layout.addLayout(actions_row)
+        layout.addWidget(self.status_label)
+        layout.addWidget(button_box)
+
+        self.refresh_ports()
+
+    # -- Conexão ------------------------------------------------------------
+    def refresh_ports(self) -> None:
+        """Atualiza a lista de portas seriais disponíveis."""
+        current = self.port_combo.currentData()
+        self.port_combo.clear()
+        ports = serial_io.list_serial_ports()
+        if not ports:
+            self.port_combo.addItem("(nenhuma porta encontrada)", None)
+            self.connect_button.setEnabled(False)
+        else:
+            self.connect_button.setEnabled(True)
+            for name, description in ports:
+                label = f"{name} — {description}" if description else name
+                self.port_combo.addItem(label, name)
+            index = self.port_combo.findData(current)
+            if index >= 0:
+                self.port_combo.setCurrentIndex(index)
+
+    def _selected_baud(self) -> int:
+        """Baud escolhido (aceita valor digitado)."""
+        value = parse_number(self.baud_combo.currentText())
+        if value is None or value <= 0:
+            return serial_io.DEFAULT_BAUD_RATE
+        return int(value)
+
+    def _toggle_connection(self, checked: bool) -> None:
+        """Conecta ou desconecta conforme o estado do botão."""
+        if checked:
+            port = self.port_combo.currentData()
+            if not port:
+                self.connect_button.setChecked(False)
+                QMessageBox.information(
+                    self,
+                    "Conexão Serial",
+                    "Nenhuma porta serial disponível. Conecte o "
+                    "dispositivo e clique em \"Atualizar portas\".",
+                )
+                return
+            try:
+                self._acq.open(port, self._selected_baud())
+            except RuntimeError as exc:
+                self.connect_button.setChecked(False)
+                QMessageBox.critical(
+                    self, "Conexão Serial", str(exc)
+                )
+        else:
+            self._acq.close()
+
+    def _on_opened(self) -> None:
+        self.connect_button.setChecked(True)
+        self.connect_button.setText("Desconectar")
+        self.port_combo.setEnabled(False)
+        self.baud_combo.setEnabled(False)
+        self.refresh_button.setEnabled(False)
+        self.status_label.setText(
+            f"Conectado a {self._acq.port_name} "
+            f"({self._selected_baud()} baud). Aguardando dados…"
+        )
+
+    def _on_closed(self) -> None:
+        self.connect_button.setChecked(False)
+        self.connect_button.setText("Conectar")
+        self.port_combo.setEnabled(True)
+        self.baud_combo.setEnabled(True)
+        self.refresh_button.setEnabled(True)
+        self.status_label.setText(
+            f"Desconectado. {len(self._rows)} ponto(s) recebido(s)."
+        )
+
+    def _on_error(self, message: str) -> None:
+        self.status_label.setText(f"Erro na porta serial: {message}")
+
+    # -- Recepção -----------------------------------------------------------
+    def _current_mapping(self) -> tuple[int, ...]:
+        """Mapeamento de colunas do formato selecionado."""
+        return self.format_combo.currentData()
+
+    def _on_raw_line(self, line: str) -> None:
+        """Adiciona uma linha bruta ao log (com limite de tamanho)."""
+        self.log_edit.appendPlainText(line)
+        document = self.log_edit.document()
+        if document.blockCount() > self._MAX_LOG_LINES:
+            cursor = self.log_edit.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.select(cursor.SelectionType.LineUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+
+    def _on_row_received(
+        self, values: list[Optional[float]]
+    ) -> None:
+        """Mapeia uma linha recebida para as colunas canônicas."""
+        mapping = self._current_mapping()
+        canonical: list[Optional[float]] = [None] * len(COLUMN_LABELS)
+        for position, target in enumerate(mapping):
+            if position < len(values):
+                canonical[target] = values[position]
+        self._rows.append(canonical)
+        self._append_preview_row(canonical)
+        self.status_label.setText(
+            f"Conectado a {self._acq.port_name}. "
+            f"{len(self._rows)} ponto(s) recebido(s)."
+        )
+
+    def _append_preview_row(
+        self, canonical: list[Optional[float]]
+    ) -> None:
+        """Acrescenta uma linha à tabela de prévia."""
+        row = self.preview_table.rowCount()
+        self.preview_table.insertRow(row)
+        for column, value in enumerate(canonical):
+            text = "" if value is None else _CELL_FORMAT.format(value)
+            self.preview_table.setItem(
+                row, column, QTableWidgetItem(text)
+            )
+        self.preview_table.scrollToBottom()
+
+    # -- Ações --------------------------------------------------------------
+    def _on_clear(self) -> None:
+        """Descarta os pontos recebidos e o log."""
+        self._rows.clear()
+        self.preview_table.setRowCount(0)
+        self.log_edit.clear()
+        self.status_label.setText("Pontos limpos.")
+
+    def _on_send_to_table(self) -> None:
+        """Envia os pontos recebidos para a tabela de dados."""
+        if not self._rows:
+            QMessageBox.information(
+                self,
+                "Conexão Serial",
+                "Nenhum ponto recebido ainda.",
+            )
+            return
+        self.rowsToTable.emit([row[:] for row in self._rows])
+        self.status_label.setText(
+            f"{len(self._rows)} ponto(s) enviado(s) para a tabela de "
+            "dados."
+        )
+
+    def _on_create_measurement(self) -> None:
+        """Cria uma medição a partir dos pontos recebidos."""
+        if not self._rows:
+            QMessageBox.information(
+                self,
+                "Conexão Serial",
+                "Nenhum ponto recebido ainda.",
+            )
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            "Nova medição",
+            "Nome da medição (ex.: FRA0F):",
+        )
+        if not ok or not name.strip():
+            return
+        try:
+            measurement = Measurement.from_components(
+                name=name.strip(),
+                frequency=[r[COL_FREQ] for r in self._rows],
+                z_real=[r[COL_ZREAL] for r in self._rows],
+                minus_z_imag=[r[COL_MINUS_ZIMAG] for r in self._rows],
+                magnitude=[r[COL_ZMOD] for r in self._rows],
+                phase_deg=[r[COL_PHASE] for r in self._rows],
+                voltage=[r[COL_VOLT] for r in self._rows],
+                current=[r[COL_CURR] for r in self._rows],
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Nova medição", str(exc))
+            return
+        self.measurementCreated.emit(measurement)
+        self.status_label.setText(
+            f"Medição '{measurement.name}' criada "
+            f"({measurement.n_points} pontos)."
+        )
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (API Qt)
+        """Fecha a porta serial ao fechar a janela."""
+        self._acq.close()
+        super().closeEvent(event)
+
+
+# ---------------------------------------------------------------------------
 # Editor de circuito equivalente (estilo NOVA 2 / ZView)
 # ---------------------------------------------------------------------------
 def circuit_value_lines(
@@ -3105,6 +3438,8 @@ class MainWindow(QMainWindow):
         self.corrections: dict[str, InstrumentCorrection] = {}
         #: Janela de simulação do módulo FV (criada sob demanda).
         self._simulation_dialog: Optional[PVSimulationDialog] = None
+        #: Janela de conexão serial (criada sob demanda).
+        self._serial_dialog: Optional[SerialDialog] = None
         #: Janelas do criador de gráficos abertas.
         self._chart_dialogs: list[ChartBuilderDialog] = []
 
@@ -3452,6 +3787,20 @@ class MainWindow(QMainWindow):
         )
         self.action_simulation.triggered.connect(self._open_simulation)
 
+        self.action_serial = QAction(
+            style.standardIcon(
+                QStyle.StandardPixmap.SP_ComputerIcon
+            ),
+            "Conexão Serial…",
+            self,
+        )
+        self.action_serial.setToolTip(
+            "Recebe pontos de medição de um sistema embarcado por "
+            "porta serial (padrão 115200 baud): frequência, tensão, "
+            "corrente e fase."
+        )
+        self.action_serial.triggered.connect(self._open_serial_dialog)
+
         self.action_chart_builder = QAction(
             style.standardIcon(
                 QStyle.StandardPixmap.SP_FileDialogListView
@@ -3526,6 +3875,7 @@ class MainWindow(QMainWindow):
         menu_analysis.addAction(self.action_apply_correction)
 
         menu_tools = self.menuBar().addMenu("&Ferramentas")
+        menu_tools.addAction(self.action_serial)
         menu_tools.addAction(self.action_chart_builder)
         menu_tools.addAction(self.action_simulation)
 
@@ -3550,6 +3900,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.action_fit)
         toolbar.addAction(self.action_correction)
         toolbar.addSeparator()
+        toolbar.addAction(self.action_serial)
         toolbar.addAction(self.action_chart_builder)
         toolbar.addAction(self.action_simulation)
         toolbar.addAction(self.action_report)
@@ -4180,6 +4531,33 @@ class MainWindow(QMainWindow):
         self._simulation_dialog.show()
         self._simulation_dialog.raise_()
         self._simulation_dialog.activateWindow()
+
+    # -- Conexão serial --------------------------------------------------------
+    def _open_serial_dialog(self) -> None:
+        """Abre (ou traz à frente) a janela de conexão serial."""
+        if self._serial_dialog is None:
+            self._serial_dialog = SerialDialog(self)
+            self._serial_dialog.measurementCreated.connect(
+                self.add_measurement
+            )
+            self._serial_dialog.rowsToTable.connect(
+                self._serial_rows_to_table
+            )
+        self._serial_dialog.refresh_ports()
+        self._serial_dialog.show()
+        self._serial_dialog.raise_()
+        self._serial_dialog.activateWindow()
+
+    def _serial_rows_to_table(
+        self, rows: list[list[Optional[float]]]
+    ) -> None:
+        """Preenche a tabela de dados com pontos recebidos pela serial."""
+        self.data_panel.table.set_rows(rows)
+        self.tabs.setCurrentWidget(self.data_panel)
+        self.show_status(
+            f"{len(rows)} ponto(s) da serial carregados na tabela de "
+            "dados."
+        )
 
     # -- Ajuda -----------------------------------------------------------------
     def _show_about(self) -> None:

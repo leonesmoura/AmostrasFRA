@@ -1,6 +1,7 @@
 # AMOSTRAS FRA 2.0 — dependências
 # Testado com Python 3.11/3.12 em Windows 11.
 
+# PySide6 já inclui QtSerialPort (conexão serial) — sem dependência extra.
 PySide6>=6.6
 numpy>=2.0
 scipy>=1.11
