@@ -253,6 +253,49 @@ def export_measurements_csv(
     logger.info("CSV exportado: %s", path)
 
 
+def export_correction(
+    correction: InstrumentCorrection,
+    path: str | Path,
+    sep: str = ";",
+    decimal: str = ",",
+) -> None:
+    """Exporta a tabela de uma correção do instrumento.
+
+    Grava frequência, magnitude e fase do resistor padrão e a função
+    de transferência ``H(f)`` calculada (Re, Im, |H| e fase de H).  O
+    arquivo é reimportável pela janela de Correção do Instrumento (as
+    colunas de frequência, magnitude e fase são reconhecidas).
+
+    Args:
+        correction: Correção a exportar.
+        path: Caminho do arquivo (``.csv``, ``.txt``, ``.xlsx`` ou
+            ``.xlsm``).
+        sep: Separador de campos (apenas para CSV/TXT).
+        decimal: Separador decimal (apenas para CSV/TXT).
+
+    Raises:
+        ValueError: Se a extensão não for suportada.
+    """
+    file_path = Path(path)
+    suffix = file_path.suffix.lower()
+    df = correction.to_dataframe()
+    if suffix in {".xlsx", ".xlsm"}:
+        sheet = _sanitize_sheet_name(correction.name, set())
+        df.to_excel(file_path, sheet_name=sheet, index=False)
+    elif suffix in {".csv", ".txt", ".dat"}:
+        df.to_csv(
+            file_path, sep=sep, decimal=decimal, index=False,
+            encoding="utf-8-sig",
+        )
+    else:
+        raise ValueError(
+            f"Extensão '{suffix}' não suportada. Use CSV, TXT ou XLSX."
+        )
+    logger.info(
+        "Correção '%s' exportada: %s.", correction.name, file_path
+    )
+
+
 def export_iv_excel(
     curves: Sequence[IVCurve],
     path: str | Path,

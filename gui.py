@@ -19,6 +19,7 @@ Componentes:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable, Optional, Sequence
 
 import numpy as np
@@ -1486,6 +1487,13 @@ class CorrectionDialog(QDialog):
         self.import_button = QPushButton("Importar…", self)
         self.import_button.clicked.connect(self._on_import)
 
+        self.export_button = QPushButton("Exportar…", self)
+        self.export_button.setToolTip(
+            "Salva a tabela da correção (frequência, magnitude, fase e "
+            "H(f) calculada) em CSV ou Excel."
+        )
+        self.export_button.clicked.connect(self._on_export)
+
         self.compute_button = QPushButton("Calcular H(f)", self)
         self.compute_button.clicked.connect(self._on_compute)
 
@@ -1519,6 +1527,7 @@ class CorrectionDialog(QDialog):
         left.addWidget(self.table, 1)
         buttons_row = QHBoxLayout()
         buttons_row.addWidget(self.import_button)
+        buttons_row.addWidget(self.export_button)
         buttons_row.addWidget(self.compute_button)
         buttons_row.addWidget(self.save_button)
         buttons_row.addStretch(1)
@@ -1658,6 +1667,35 @@ class CorrectionDialog(QDialog):
                     phase = minus_z_im if phase is None else phase
             rows.append([freq, magnitude, phase])
         self.table.set_rows(rows)
+
+    def _on_export(self) -> None:
+        """Exporta a tabela da correção atual para CSV ou Excel."""
+        try:
+            correction = self._build_correction()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Exportar correção", str(exc))
+            return
+        safe_name = re.sub(r"[^\w\-. ]", "_", correction.name).strip()
+        default = f"correcao_{safe_name or 'instrumento'}.csv"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar tabela de correção",
+            default,
+            "Arquivo CSV (*.csv);;Planilha do Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            exportacao.export_correction(correction, path)
+        except (OSError, ValueError) as exc:
+            logger.exception("Falha ao exportar correção.")
+            QMessageBox.critical(
+                self,
+                "Exportar correção",
+                f"Não foi possível exportar:\n{exc}",
+            )
+            return
+        self.status_label.setText(f"Correção exportada: {path}")
 
     def _build_correction(self) -> InstrumentCorrection:
         """Valida os campos e constrói a correção.
