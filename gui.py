@@ -1629,6 +1629,11 @@ class DiodeFitDialog(QDialog):
             index = self.curve_combo.findData(initial_name)
             if index >= 0:
                 self.curve_combo.setCurrentIndex(index)
+        # Trocar a amostra atualiza o gráfico automaticamente (reaproveita
+        # o ajuste já calculado; ajusta na hora se ainda não houver um).
+        self.curve_combo.currentIndexChanged.connect(
+            lambda _index: self._on_curve_changed()
+        )
 
         self.cells_spin = QSpinBox(self)
         self.cells_spin.setRange(1, 1000)
@@ -1720,13 +1725,35 @@ class DiodeFitDialog(QDialog):
         layout.addWidget(button_box)
 
         if self.curve_combo.count() > 0:
-            self._run_fit()
+            self._on_curve_changed()
 
     def _selected_curve(self) -> Optional[util.IVCurve]:
         name = self.curve_combo.currentData()
         if name is None:
             return None
         return self._window.iv_curves.get(name)
+
+    def _on_curve_changed(self) -> None:
+        """Reage à troca de amostra no seletor.
+
+        Mostra imediatamente o ajuste já calculado da amostra
+        selecionada (o ajuste é determinístico e o cache é invalidado
+        quando os dados mudam); se ainda não houver um ajuste, calcula
+        na hora.  Assim, trocar de amostra atualiza o gráfico sem exigir
+        um novo clique em "Ajustar".
+        """
+        name = self.curve_combo.currentData()
+        if name is None:
+            return
+        cached = self._window.iv_fit_results.get(name)
+        if cached is not None:
+            self._display_result(cached)
+            self._window.show_status(
+                f"Ajuste de diodo de '{name}' "
+                f"(R² = {cached.r_squared:.6f})."
+            )
+        else:
+            self._run_fit()
 
     def _run_fit(self) -> None:
         curve = self._selected_curve()
@@ -1750,9 +1777,16 @@ class DiodeFitDialog(QDialog):
             return
         QApplication.restoreOverrideCursor()
 
-        self._last_result = result
         self._window.iv_fit_results[result.curve_name] = result
+        self._display_result(result)
+        self._window.show_status(
+            f"Ajuste de diodo de '{result.curve_name}' concluído "
+            f"(R² = {result.r_squared:.6f})."
+        )
 
+    def _display_result(self, result: "iv_model.IVFitResult") -> None:
+        """Renderiza um ajuste: gráfico, tabela de parâmetros e métricas."""
+        self._last_result = result
         self.canvas.clear()
         plot_diode_fit(
             self.canvas.figure, result, self._window.plot_style()
@@ -1770,10 +1804,6 @@ class DiodeFitDialog(QDialog):
             self.params_table.setItem(row, 2, QTableWidgetItem(error_text))
 
         self._update_ideality()
-        self._window.show_status(
-            f"Ajuste de diodo de '{result.curve_name}' concluído "
-            f"(R² = {result.r_squared:.6f})."
-        )
 
     def _update_ideality(self) -> None:
         """Atualiza o texto de métricas com o fator de idealidade."""

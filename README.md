@@ -130,7 +130,9 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   Rp, a), as métricas (RMSE, R²) e o **fator de idealidade** ``n``
   derivado de ``a`` para o número de células em série e a temperatura
   informados, além da sobreposição do modelo sobre os dados e do painel
-  de resíduos. O botão **"Ajustar todas…"** ajusta todas as curvas e
+  de resíduos. **Trocar a amostra no seletor atualiza o gráfico
+  automaticamente** (reaproveitando o ajuste já calculado, sem novo
+  clique). O botão **"Ajustar todas…"** ajusta todas as curvas e
   gera uma **tabela comparativa** dos parâmetros entre as amostras
   (útil para relacionar a assinatura elétrica à condição do módulo).
   *Observação:* a partir de uma única curva, Rs, Rp e ``a`` são
