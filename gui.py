@@ -1071,6 +1071,12 @@ class IVTab(QWidget):
             "lateral pelos dados da tabela."
         )
         update_curve_button.clicked.connect(self._on_update_curve)
+        associate_button = QPushButton("Associar curvas I-V…", self)
+        associate_button.setToolTip(
+            "Abre uma tabela para associar cada curva I-V à amostra "
+            "(FRA) correspondente."
+        )
+        associate_button.clicked.connect(self._on_associate)
         export_button = QPushButton("Exportar Excel…", self)
         export_button.clicked.connect(self._on_export_excel)
 
@@ -1082,6 +1088,7 @@ class IVTab(QWidget):
         entry_buttons2 = QHBoxLayout()
         entry_buttons2.addWidget(add_curve_button)
         entry_buttons2.addWidget(update_curve_button)
+        entry_buttons2.addWidget(associate_button)
         entry_buttons2.addWidget(export_button)
 
         entry = QVBoxLayout()
@@ -1229,24 +1236,24 @@ class IVTab(QWidget):
             )
 
         if len(curves) >= 2:
-            names = ", ".join(c.name for c in curves)
-            answer = QMessageBox.question(
+            targets = self._window.sample_names()
+            dialog = IVAssociationDialog(
                 self,
-                "Importar curva I-V",
-                f"O arquivo contém {len(curves)} curvas:\n{names}\n\n"
-                "Adicionar todas como curvas separadas na lista?\n"
-                "(Escolha \"Não\" para carregar apenas a 1ª na tabela.)",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
+                [c.name for c in curves],
+                targets,
+                include_new=True,
+                include_skip=True,
             )
-            if answer == QMessageBox.StandardButton.Yes:
-                for curve in curves:
-                    self._window.add_iv_curve(curve, checked=True)
-                self._window.show_status(
-                    f"{len(curves)} curvas I-V importadas de '{path}'."
-                )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
+            added = self._window.import_iv_curves_with_mapping(
+                curves, dialog.mapping()
+            )
+            self._window.show_status(
+                f"{added} curva(s) I-V importada(s)/associada(s) de "
+                f"'{path}'."
+            )
+            return
 
         try:
             rows = util.load_iv_table_from_file(path)
@@ -1316,6 +1323,36 @@ class IVTab(QWidget):
             )
             return
         self._window.show_status(f"Curvas I-V exportadas: {path}")
+
+    def _on_associate(self) -> None:
+        """Reassocia as curvas I-V existentes às amostras (FRA)."""
+        iv_names = [
+            name
+            for name in self._window.sample_names()
+            if name in self._window.iv_curves
+        ]
+        if not iv_names:
+            QMessageBox.information(
+                self,
+                "Associar curvas I-V",
+                "Não há curvas I-V para associar. Importe ou crie "
+                "curvas primeiro.",
+            )
+            return
+        targets = self._window.sample_names()
+        dialog = IVAssociationDialog(
+            self,
+            iv_names,
+            targets,
+            include_new=False,
+            include_skip=False,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        moved = self._window.reassign_iv_curves(dialog.mapping())
+        self._window.show_status(
+            f"{moved} curva(s) I-V reassociada(s) às amostras."
+        )
 
     # -- Gráfico e parâmetros ---------------------------------------------------
     def refresh(self) -> None:
@@ -1388,6 +1425,129 @@ class IVTab(QWidget):
                 self.params_table.setItem(
                     row, column, QTableWidgetItem(text)
                 )
+
+
+# ---------------------------------------------------------------------------
+# Associação de curvas I-V às amostras
+# ---------------------------------------------------------------------------
+class IVAssociationDialog(QDialog):
+    """Diálogo para associar curvas I-V às amostras (FRA).
+
+    Exibe uma tabela com cada curva I-V e um seletor da amostra à qual
+    ela pertence.  Usado ao importar várias curvas (para atrelá-las aos
+    FRAs existentes) e para reassociar depois.
+    """
+
+    #: Valor especial: manter/criar a curva como amostra nova.
+    NEW = "__new__"
+    #: Valor especial: não importar/ignorar a curva.
+    SKIP = "__skip__"
+
+    def __init__(
+        self,
+        parent: Optional[QWidget],
+        curve_names: Sequence[str],
+        targets: Sequence[str],
+        include_new: bool = True,
+        include_skip: bool = True,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Associar curvas I-V às amostras")
+        self.resize(560, 460)
+        self._curve_names = list(curve_names)
+        self._targets = list(targets)
+        self._include_new = include_new
+        self._include_skip = include_skip
+
+        hint = QLabel(
+            "Para cada curva I-V, escolha a amostra à qual ela pertence "
+            "(por exemplo, a amostra que já tem o FRA). \"Nova amostra\" "
+            "mantém a curva com o próprio nome. Use \"Associar por nome\" "
+            "para casar automaticamente curvas e amostras de mesmo nome.",
+            self,
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #9a9a9a;")
+
+        self.table = QTableWidget(
+            len(self._curve_names), 2, self
+        )
+        self.table.setHorizontalHeaderLabels(
+            ["Curva I-V", "Associar à amostra"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.table.verticalHeader().setVisible(False)
+        self._combos: list[QComboBox] = []
+        for row, name in enumerate(self._curve_names):
+            name_item = QTableWidgetItem(name)
+            name_item.setFlags(
+                name_item.flags() & ~Qt.ItemFlag.ItemIsEditable
+            )
+            self.table.setItem(row, 0, name_item)
+            combo = QComboBox(self)
+            if include_new:
+                combo.addItem(f"Nova amostra ({name})", self.NEW)
+            for target in self._targets:
+                combo.addItem(f"Amostra: {target}", target)
+            if include_skip:
+                combo.addItem("Não importar", self.SKIP)
+            self.table.setCellWidget(row, 1, combo)
+            self._combos.append(combo)
+
+        auto_button = QPushButton("Associar por nome", self)
+        auto_button.clicked.connect(self._auto_match)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        button_box.button(QDialogButtonBox.StandardButton.Ok).setText(
+            "Aplicar"
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        top = QHBoxLayout()
+        top.addWidget(auto_button)
+        top.addStretch(1)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(hint)
+        layout.addLayout(top)
+        layout.addWidget(self.table, 1)
+        layout.addWidget(button_box)
+
+        self._auto_match()
+
+    def _auto_match(self) -> None:
+        """Seleciona a amostra de mesmo nome (normalizado) por linha."""
+        normalized = {
+            self._normalize(t): t for t in self._targets
+        }
+        for row, name in enumerate(self._curve_names):
+            combo = self._combos[row]
+            target = normalized.get(self._normalize(name))
+            if target is not None:
+                index = combo.findData(target)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        return "".join(text.lower().split())
+
+    def mapping(self) -> dict[str, str]:
+        """Mapeamento ``{nome da curva: alvo}`` escolhido pelo usuário.
+
+        O alvo é o nome de uma amostra, :attr:`NEW` ou :attr:`SKIP`.
+        """
+        return {
+            name: self._combos[row].currentData()
+            for row, name in enumerate(self._curve_names)
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -4039,6 +4199,104 @@ class MainWindow(QMainWindow):
         """Nome da amostra selecionada na lista lateral (ou None)."""
         item = self._selected_list_item(warn=warn)
         return item.text() if item is not None else None
+
+    def set_iv_curve(
+        self, sample_name: str, curve: util.IVCurve, checked: bool = True
+    ) -> None:
+        """Define a curva I-V de uma amostra (cria a amostra se preciso)."""
+        self.iv_curves[sample_name] = curve.copy(new_name=sample_name)
+        self._ensure_sample_item(sample_name, checked)
+        self.update_sample_tooltip(sample_name)
+        self._sync_measurement_widgets()
+        self.iv_tab.refresh()
+
+    def _remove_sample_item(self, name: str) -> None:
+        """Remove o item da amostra ``name`` da lista lateral."""
+        self.measurement_list.blockSignals(True)
+        try:
+            for index in range(self.measurement_list.count()):
+                if self.measurement_list.item(index).text() == name:
+                    self.measurement_list.takeItem(index)
+                    return
+        finally:
+            self.measurement_list.blockSignals(False)
+
+    def import_iv_curves_with_mapping(
+        self,
+        curves: Sequence[util.IVCurve],
+        mapping: dict[str, str],
+    ) -> int:
+        """Adiciona curvas I-V aplicando a associação escolhida.
+
+        Args:
+            curves: Curvas importadas.
+            mapping: ``{nome da curva: alvo}`` — nome de amostra,
+                ``IVAssociationDialog.NEW`` ou ``.SKIP``.
+
+        Returns:
+            Número de curvas efetivamente importadas.
+        """
+        added = 0
+        for curve in curves:
+            choice = mapping.get(curve.name, IVAssociationDialog.NEW)
+            if choice == IVAssociationDialog.SKIP:
+                continue
+            if choice == IVAssociationDialog.NEW:
+                self.add_iv_curve(curve, checked=True)
+            else:
+                self.set_iv_curve(choice, curve, checked=True)
+            added += 1
+        return added
+
+    def reassign_iv_curve(self, from_name: str, to_name: str) -> None:
+        """Move a curva I-V da amostra ``from_name`` para ``to_name``."""
+        if from_name == to_name or from_name not in self.iv_curves:
+            return
+        curve = self.iv_curves.pop(from_name)
+        self.iv_curves[to_name] = curve.copy(new_name=to_name)
+        if (
+            from_name in self.curve_colors
+            and to_name not in self.curve_colors
+        ):
+            self.curve_colors[to_name] = self.curve_colors[from_name]
+        # Remove a amostra de origem se ela não tiver mais FRA nem I-V.
+        if (
+            from_name not in self.measurements
+            and from_name not in self.iv_curves
+        ):
+            self._remove_sample_item(from_name)
+            self.curve_colors.pop(from_name, None)
+        self._ensure_sample_item(to_name, checked=True)
+        self.update_sample_tooltip(to_name)
+        self.update_sample_tooltip(from_name)
+
+    def reassign_iv_curves(self, mapping: dict[str, str]) -> int:
+        """Aplica um mapeamento de reassociação de curvas I-V.
+
+        Args:
+            mapping: ``{nome atual: nome da amostra alvo}``.
+
+        Returns:
+            Número de curvas reassociadas.
+        """
+        moved = 0
+        for from_name, to_name in mapping.items():
+            if (
+                to_name in (
+                    IVAssociationDialog.NEW,
+                    IVAssociationDialog.SKIP,
+                )
+                or to_name == from_name
+            ):
+                continue
+            self.reassign_iv_curve(from_name, to_name)
+            moved += 1
+        if moved:
+            self._sync_measurement_widgets()
+            self._apply_list_item_colors()
+            self.refresh_plots()
+            self.iv_tab.refresh()
+        return moved
 
     def _update_selected_measurement(
         self, template: Measurement

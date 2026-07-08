@@ -112,7 +112,12 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   importação reconhece o **formato de matriz** — uma coluna de tensão
   compartilhada e várias colunas de corrente (uma curva por coluna,
   nomeada pelo cabeçalho, ex.: `Tensão | 0 falha | 1 Falha | …`) — e
-  cria todas as amostras de uma vez.
+  cria todas as amostras de uma vez. Ao importar várias curvas, abre-se
+  uma **tabela de associação** para escolher, para cada curva I-V, a
+  qual amostra (FRA) ela pertence — ou mantê-la como amostra nova
+  ("Associar por nome" casa automaticamente curvas e amostras de mesmo
+  nome). O botão **"Associar curvas I-V…"** permite refazer a
+  associação depois.
 - **Criador de gráficos** (Ferramentas → Criador de gráficos…):
   janelas independentes para compor gráficos de publicação com
   qualquer quantidade de medições (ex.: ganho e fase de Bode de 30
