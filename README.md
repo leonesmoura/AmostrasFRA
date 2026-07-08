@@ -118,6 +118,25 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   ("Associar por nome" casa automaticamente curvas e amostras de mesmo
   nome). O botão **"Associar curvas I-V…"** permite refazer a
   associação depois.
+- **Ajuste do modelo de diodo único** (botão "Ajustar modelo de
+  diodo…" na aba Curva I-V): estima os cinco parâmetros do módulo
+  fotovoltaico real ajustando a equação de célula real à curva I-V, à
+  semelhança do ajuste de circuito equivalente do FRA:
+  ``I = I_L − I₀·[exp((V+I·Rs)/a) − 1] − (V+I·Rs)/Rp``. A equação
+  implícita é resolvida pela função W de Lambert e ajustada por mínimos
+  quadrados não lineares; a convenção de sinal (curva **escura**
+  *dark I-V*, crescente, ou **iluminada**, decrescente) é detectada
+  automaticamente. Mostra os parâmetros com incertezas (I_L, I₀, Rs,
+  Rp, a), as métricas (RMSE, R²) e o **fator de idealidade** ``n``
+  derivado de ``a`` para o número de células em série e a temperatura
+  informados, além da sobreposição do modelo sobre os dados e do painel
+  de resíduos. O botão **"Ajustar todas…"** ajusta todas as curvas e
+  gera uma **tabela comparativa** dos parâmetros entre as amostras
+  (útil para relacionar a assinatura elétrica à condição do módulo).
+  *Observação:* a partir de uma única curva, Rs, Rp e ``a`` são
+  parcialmente correlacionados — o modelo reproduz a curva com R² alto,
+  porém os valores individuais carregam incerteza; I_L (≈ Isc) e o
+  formato geral são os mais confiáveis.
 - **Criador de gráficos** (Ferramentas → Criador de gráficos…):
   janelas independentes para compor gráficos de publicação com
   qualquer quantidade de medições (ex.: ganho e fase de Bode de 30
@@ -188,6 +207,7 @@ python AmostrasFRA.py
 | `kk.py`           | Validação de Kramers-Kronig (PV de Cauchy)           |
 | `correcao.py`     | Correção do instrumento (resistor padrão, `H(f)`)    |
 | `circuitos.py`    | Modelos e ajuste de circuitos equivalentes           |
+| `iv_model.py`     | Ajuste do modelo de diodo único da curva I-V         |
 | `exportacao.py`   | Exportação de imagens, Excel, CSV e relatório PDF    |
 | `graficos.py`     | Criador de gráficos com zoom de destaque (inset)     |
 | `serial_io.py`    | Conexão serial (QtSerialPort) e parsing dos pontos   |

@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
@@ -71,6 +72,7 @@ from PySide6.QtWidgets import (
 
 import circuitos
 import exportacao
+import iv_model
 import kk as kk_module
 import serial_io
 import util
@@ -86,6 +88,7 @@ from plots import (
     plot_bode_phase,
     plot_circuit_fit,
     plot_comparison,
+    plot_diode_fit,
     plot_kk,
     plot_nyquist,
 )
@@ -1077,6 +1080,12 @@ class IVTab(QWidget):
             "(FRA) correspondente."
         )
         associate_button.clicked.connect(self._on_associate)
+        fit_button = QPushButton("Ajustar modelo de diodo…", self)
+        fit_button.setToolTip(
+            "Estima os parâmetros do módulo (I_L, I₀, Rs, Rp, a) "
+            "ajustando o modelo de diodo único à curva I-V."
+        )
+        fit_button.clicked.connect(self._on_fit_diode)
         export_button = QPushButton("Exportar Excel…", self)
         export_button.clicked.connect(self._on_export_excel)
 
@@ -1089,13 +1098,16 @@ class IVTab(QWidget):
         entry_buttons2.addWidget(add_curve_button)
         entry_buttons2.addWidget(update_curve_button)
         entry_buttons2.addWidget(associate_button)
-        entry_buttons2.addWidget(export_button)
+        entry_buttons3 = QHBoxLayout()
+        entry_buttons3.addWidget(fit_button)
+        entry_buttons3.addWidget(export_button)
 
         entry = QVBoxLayout()
         entry.addWidget(hint)
         entry.addWidget(self.table, 1)
         entry.addLayout(entry_buttons1)
         entry.addLayout(entry_buttons2)
+        entry.addLayout(entry_buttons3)
         entry_widget = QWidget(self)
         entry_widget.setLayout(entry)
         entry_widget.setMaximumWidth(460)
@@ -1200,6 +1212,7 @@ class IVTab(QWidget):
             QMessageBox.warning(self, "Atualizar curva", str(exc))
             return
         self._window.iv_curves[name] = curve
+        self._window.iv_fit_results.pop(name, None)
         self._window.update_sample_tooltip(name)
         self.refresh()
         self._window.show_status(
@@ -1353,6 +1366,27 @@ class IVTab(QWidget):
         self._window.show_status(
             f"{moved} curva(s) I-V reassociada(s) às amostras."
         )
+
+    def _on_fit_diode(self) -> None:
+        """Abre o ajuste do modelo de diodo único das curvas I-V."""
+        iv_names = [
+            name
+            for name in self._window.sample_names()
+            if name in self._window.iv_curves
+        ]
+        if not iv_names:
+            QMessageBox.information(
+                self,
+                "Ajustar modelo de diodo",
+                "Não há curvas I-V para ajustar. Importe ou crie uma "
+                "curva primeiro.",
+            )
+            return
+        initial = self._window.selected_sample_name(warn=False)
+        if initial not in iv_names:
+            initial = iv_names[0]
+        dialog = DiodeFitDialog(self, self._window, initial)
+        dialog.exec()
 
     # -- Gráfico e parâmetros ---------------------------------------------------
     def refresh(self) -> None:
@@ -1548,6 +1582,313 @@ class IVAssociationDialog(QDialog):
             name: self._combos[row].currentData()
             for row, name in enumerate(self._curve_names)
         }
+
+
+# ---------------------------------------------------------------------------
+# Ajuste do modelo de diodo único (curva I-V)
+# ---------------------------------------------------------------------------
+class DiodeFitDialog(QDialog):
+    """Ajuste do modelo de diodo único de uma curva I-V.
+
+    Estima os cinco parâmetros do módulo fotovoltaico real
+    (``I_L, I_0, R_s, R_p, a``) ajustando a equação do diodo único à
+    curva I-V medida, à semelhança do ajuste de circuito equivalente do
+    FRA.  Exibe os parâmetros com incertezas, as métricas de qualidade
+    (RMSE, R², fator de idealidade) e a sobreposição do modelo sobre os
+    dados experimentais.
+    """
+
+    def __init__(
+        self,
+        parent: Optional[QWidget],
+        window: "MainWindow",
+        initial_name: Optional[str] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._window = window
+        self.setWindowTitle("Ajuste do modelo de diodo único — Curva I-V")
+        self.resize(940, 620)
+        self._last_result: Optional[iv_model.IVFitResult] = None
+
+        hint = QLabel(
+            "Ajusta o modelo do módulo fotovoltaico real (diodo único, "
+            "cinco parâmetros) à curva I-V:\n"
+            "I = I_L − I₀·[exp((V+I·Rs)/a) − 1] − (V+I·Rs)/Rp.\n"
+            "A convenção de sinal (curva escura ou iluminada) é "
+            "detectada automaticamente.",
+            self,
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #9a9a9a;")
+
+        self.curve_combo = QComboBox(self)
+        for name in self._window.sample_names():
+            if name in self._window.iv_curves:
+                self.curve_combo.addItem(name, name)
+        if initial_name is not None:
+            index = self.curve_combo.findData(initial_name)
+            if index >= 0:
+                self.curve_combo.setCurrentIndex(index)
+
+        self.cells_spin = QSpinBox(self)
+        self.cells_spin.setRange(1, 1000)
+        self.cells_spin.setValue(60)
+        self.cells_spin.setToolTip(
+            "Número de células em série (Ns) do módulo, usado para "
+            "derivar o fator de idealidade n a partir de a."
+        )
+        self.temp_spin = QDoubleSpinBox(self)
+        self.temp_spin.setRange(-40.0, 150.0)
+        self.temp_spin.setValue(25.0)
+        self.temp_spin.setSuffix(" °C")
+        self.temp_spin.setDecimals(1)
+        self.cells_spin.valueChanged.connect(self._update_ideality)
+        self.temp_spin.valueChanged.connect(self._update_ideality)
+
+        form = QFormLayout()
+        form.addRow("Amostra (curva I-V):", self.curve_combo)
+        form.addRow("Células em série (Ns):", self.cells_spin)
+        form.addRow("Temperatura da célula:", self.temp_spin)
+
+        self.fit_button = QPushButton("Ajustar", self)
+        self.fit_button.clicked.connect(self._run_fit)
+        self.fit_all_button = QPushButton("Ajustar todas…", self)
+        self.fit_all_button.setToolTip(
+            "Ajusta todas as curvas I-V e mostra a comparação dos "
+            "parâmetros entre as amostras."
+        )
+        self.fit_all_button.clicked.connect(self._run_fit_all)
+        buttons_row = QHBoxLayout()
+        buttons_row.addWidget(self.fit_button)
+        buttons_row.addWidget(self.fit_all_button)
+
+        self.params_table = QTableWidget(0, 3, self)
+        self.params_table.setHorizontalHeaderLabels(
+            ["Parâmetro", "Valor", "Incerteza (1σ)"]
+        )
+        self.params_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.params_table.verticalHeader().setVisible(False)
+        self.params_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+
+        self.stats_label = QLabel("—", self)
+        self.stats_label.setWordWrap(True)
+
+        note = QLabel(
+            "Nota: a partir de uma única curva, Rs, Rp e a são "
+            "correlacionados — o modelo reproduz a curva (R² alto), mas "
+            "os valores individuais têm incerteza. I_L (≈ Isc) e o "
+            "formato são os mais confiáveis.",
+            self,
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #8a8a8a; font-size: 11px;")
+
+        left = QVBoxLayout()
+        left.addWidget(hint)
+        left.addLayout(form)
+        left.addLayout(buttons_row)
+        left.addWidget(self.params_table, 1)
+        stats_box = QGroupBox("Qualidade do ajuste", self)
+        stats_layout = QVBoxLayout(stats_box)
+        stats_layout.addWidget(self.stats_label)
+        left.addWidget(stats_box)
+        left.addWidget(note)
+        left_widget = QWidget(self)
+        left_widget.setLayout(left)
+        left_widget.setMaximumWidth(420)
+
+        self.canvas = PlotCanvas(self)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Close, self
+        )
+        button_box.rejected.connect(self.reject)
+        button_box.button(
+            QDialogButtonBox.StandardButton.Close
+        ).clicked.connect(self.reject)
+
+        content = QHBoxLayout()
+        content.addWidget(left_widget)
+        content.addWidget(self.canvas, 1)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(content, 1)
+        layout.addWidget(button_box)
+
+        if self.curve_combo.count() > 0:
+            self._run_fit()
+
+    def _selected_curve(self) -> Optional[util.IVCurve]:
+        name = self.curve_combo.currentData()
+        if name is None:
+            return None
+        return self._window.iv_curves.get(name)
+
+    def _run_fit(self) -> None:
+        curve = self._selected_curve()
+        if curve is None:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            result = iv_model.fit_single_diode(curve)
+        except (ValueError, RuntimeError) as exc:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Ajuste do modelo de diodo", str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - proteção geral
+            QApplication.restoreOverrideCursor()
+            logger.exception("Erro inesperado no ajuste de diodo.")
+            QMessageBox.critical(
+                self,
+                "Ajuste do modelo de diodo",
+                f"Erro inesperado no ajuste:\n{exc}",
+            )
+            return
+        QApplication.restoreOverrideCursor()
+
+        self._last_result = result
+        self._window.iv_fit_results[result.curve_name] = result
+
+        self.canvas.clear()
+        plot_diode_fit(
+            self.canvas.figure, result, self._window.plot_style()
+        )
+        self.canvas.draw()
+
+        self.params_table.setRowCount(0)
+        for param_name, value_text, error_text in result.summary_rows():
+            row = self.params_table.rowCount()
+            self.params_table.insertRow(row)
+            self.params_table.setItem(
+                row, 0, QTableWidgetItem(param_name)
+            )
+            self.params_table.setItem(row, 1, QTableWidgetItem(value_text))
+            self.params_table.setItem(row, 2, QTableWidgetItem(error_text))
+
+        self._update_ideality()
+        self._window.show_status(
+            f"Ajuste de diodo de '{result.curve_name}' concluído "
+            f"(R² = {result.r_squared:.6f})."
+        )
+
+    def _update_ideality(self) -> None:
+        """Atualiza o texto de métricas com o fator de idealidade."""
+        result = self._last_result
+        if result is None:
+            self.stats_label.setText("—")
+            return
+        n = result.ideality_factor(
+            n_cells=self.cells_spin.value(),
+            temperature_c=self.temp_spin.value(),
+        )
+        tipo = "escura (dark I-V)" if result.dark else "iluminada"
+        self.stats_label.setText(
+            f"Curva: {tipo}\n"
+            f"RMSE = {result.rmse:.4g} A\n"
+            f"R² = {result.r_squared:.6f}\n"
+            f"Fator de idealidade n = {n:.3g}  "
+            f"(Ns={self.cells_spin.value()}, "
+            f"T={self.temp_spin.value():.0f} °C)"
+        )
+
+    def _run_fit_all(self) -> None:
+        """Ajusta todas as curvas I-V e mostra a comparação."""
+        names = [
+            self.curve_combo.itemData(i)
+            for i in range(self.curve_combo.count())
+        ]
+        results: list[iv_model.IVFitResult] = []
+        failures: list[str] = []
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        for name in names:
+            curve = self._window.iv_curves.get(name)
+            if curve is None:
+                continue
+            try:
+                result = iv_model.fit_single_diode(curve)
+            except (ValueError, RuntimeError) as exc:
+                failures.append(f"{name}: {exc}")
+                continue
+            results.append(result)
+            self._window.iv_fit_results[result.curve_name] = result
+        QApplication.restoreOverrideCursor()
+
+        if not results:
+            QMessageBox.warning(
+                self,
+                "Ajustar todas",
+                "Nenhuma curva pôde ser ajustada.\n"
+                + "\n".join(failures),
+            )
+            return
+        DiodeFitComparisonDialog(self, results, failures).exec()
+        self._window.show_status(
+            f"{len(results)} curva(s) I-V ajustada(s) pelo modelo de "
+            "diodo."
+        )
+
+
+class DiodeFitComparisonDialog(QDialog):
+    """Tabela comparativa dos parâmetros de diodo entre amostras."""
+
+    def __init__(
+        self,
+        parent: Optional[QWidget],
+        results: Sequence["iv_model.IVFitResult"],
+        failures: Sequence[str] = (),
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Comparação — modelo de diodo entre amostras")
+        self.resize(760, 420)
+
+        headers = [
+            "Amostra", "I_L (A)", "I₀ (A)", "Rs (Ω)", "Rp (Ω)",
+            "a (V)", "R²", "Tipo",
+        ]
+        table = QTableWidget(len(results), len(headers), self)
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        for row, res in enumerate(results):
+            p = res.param_values
+            cells = [
+                res.curve_name,
+                f"{p[0]:.4g}", f"{p[1]:.3g}", f"{p[2]:.4g}",
+                f"{p[3]:.4g}", f"{p[4]:.4g}", f"{res.r_squared:.5f}",
+                "escura" if res.dark else "iluminada",
+            ]
+            for col, text in enumerate(cells):
+                table.setItem(row, col, QTableWidgetItem(text))
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(f"{len(results)} amostra(s) ajustada(s).", self)
+        )
+        layout.addWidget(table, 1)
+        if failures:
+            warn = QLabel(
+                "Não ajustadas:\n" + "\n".join(failures), self
+            )
+            warn.setWordWrap(True)
+            warn.setStyleSheet("color: #d08770;")
+            layout.addWidget(warn)
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Close, self
+        )
+        button_box.rejected.connect(self.reject)
+        button_box.button(
+            QDialogButtonBox.StandardButton.Close
+        ).clicked.connect(self.reject)
+        layout.addWidget(button_box)
 
 
 # ---------------------------------------------------------------------------
@@ -3545,6 +3886,8 @@ class MainWindow(QMainWindow):
         self.kk_results: dict[str, kk_module.KKResult] = {}
         #: Resultados de ajuste de circuito por medição.
         self.fit_results: dict[str, circuitos.FitResult] = {}
+        #: Resultados de ajuste do modelo de diodo por curva I-V.
+        self.iv_fit_results: dict[str, iv_model.IVFitResult] = {}
         #: Biblioteca de correções do instrumento (``{nome: correção}``).
         self.corrections: dict[str, InstrumentCorrection] = {}
         #: Janela de simulação do módulo FV (criada sob demanda).
@@ -4254,6 +4597,9 @@ class MainWindow(QMainWindow):
             return
         curve = self.iv_curves.pop(from_name)
         self.iv_curves[to_name] = curve.copy(new_name=to_name)
+        # O ajuste de diodo deixa de valer para o novo par de dados.
+        self.iv_fit_results.pop(from_name, None)
+        self.iv_fit_results.pop(to_name, None)
         if (
             from_name in self.curve_colors
             and to_name not in self.curve_colors
@@ -4388,6 +4734,10 @@ class MainWindow(QMainWindow):
             fit_result = self.fit_results.pop(old_name)
             fit_result.measurement_name = new_name
             self.fit_results[new_name] = fit_result
+        if old_name in self.iv_fit_results:
+            iv_fit = self.iv_fit_results.pop(old_name)
+            iv_fit.curve_name = new_name
+            self.iv_fit_results[new_name] = iv_fit
         if old_name in self.curve_colors:
             self.curve_colors[new_name] = self.curve_colors.pop(old_name)
         self.measurement_list.blockSignals(True)
@@ -4454,6 +4804,7 @@ class MainWindow(QMainWindow):
             self.iv_curves.pop(name, None)
             self.kk_results.pop(name, None)
             self.fit_results.pop(name, None)
+            self.iv_fit_results.pop(name, None)
             self.curve_colors.pop(name, None)
         self.measurement_list.blockSignals(True)
         try:

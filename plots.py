@@ -859,6 +859,85 @@ def plot_circuit_fit(
     )
 
 
+#: Nomes e unidades dos parâmetros do modelo de diodo (para rótulos).
+_IV_PARAM_NAMES: tuple[str, ...] = ("I_L", "I_0", "R_s", "R_p", "a")
+_IV_PARAM_UNITS: tuple[str, ...] = ("A", "A", "Ω", "Ω", "V")
+
+
+def plot_diode_fit(
+    figure: Figure,
+    fit: "IVFitResult",
+    style: Optional[PlotStyle] = None,
+) -> None:
+    """Plota o ajuste do modelo de diodo único à curva I-V.
+
+    Painel principal: corrente experimental (marcadores) × modelo
+    ajustado (linha).  Painel inferior: resíduos (dados − modelo).
+
+    Args:
+        figure: Figura de destino (será preenchida; limpe antes).
+        fit: Resultado de :func:`iv_model.fit_single_diode`.
+        style: Estilo de marcadores/linhas (opcional).
+    """
+    style = style or PlotStyle()
+    gs = figure.add_gridspec(3, 1, hspace=0.08)
+    ax = figure.add_subplot(gs[:2, 0])
+    ax_res = figure.add_subplot(gs[2, 0], sharex=ax)
+
+    v = fit.voltage
+    ax.plot(
+        v, fit.current_exp, label="Experimental",
+        marker=style.marker or "o", markersize=style.marker_size,
+        linestyle="none",
+    )
+    ax.plot(
+        v, fit.current_fit, label="Modelo ajustado",
+        linewidth=max(style.line_width, 1.4),
+    )
+    ax.set_ylabel("Corrente (A)")
+    tipo = "escura (dark I-V)" if fit.dark else "iluminada"
+    ax.set_title(f"Ajuste de diodo único — {fit.curve_name} ({tipo})")
+    ax.tick_params(labelbottom=False)
+
+    residual = fit.current_exp - fit.current_fit
+    ax_res.plot(
+        v, residual, marker=".", markersize=4, linestyle="-",
+        linewidth=0.8,
+    )
+    ax_res.axhline(0.0, color="gray", linewidth=0.8, linestyle=":")
+    ax_res.set_xlabel("Tensão (V)")
+    ax_res.set_ylabel("Resíduo (A)")
+
+    for axis in (ax, ax_res):
+        _finalize_axes(axis, style)
+
+    params_text = "\n".join(
+        f"{name} = {value:.4g} {unit}".rstrip()
+        for name, unit, value in zip(
+            _IV_PARAM_NAMES, _IV_PARAM_UNITS, fit.param_values,
+        )
+    )
+    stats_text = (
+        f"RMSE = {fit.rmse:.4g} A\n"
+        f"R² = {fit.r_squared:.6f}"
+    )
+    ax.text(
+        0.02,
+        0.02,
+        f"{params_text}\n{stats_text}",
+        transform=ax.transAxes,
+        va="bottom",
+        ha="left",
+        fontsize=7.5,
+        bbox={
+            "boxstyle": "round,pad=0.4",
+            "fc": matplotlib.rcParams["legend.facecolor"],
+            "ec": matplotlib.rcParams["legend.edgecolor"],
+            "alpha": 0.9,
+        },
+    )
+
+
 def plot_comparison(
     figure: Figure,
     measurements: Sequence[Measurement],
