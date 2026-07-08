@@ -20,6 +20,15 @@ ENV/
 *.log
 .amostras_fra/
 
+# Artefatos de exportação gerados pelo software (nomes padrão)
+curvas_iv.xlsx
+amostras_fra.xlsx
+grafico*.png
+grafico*.pdf
+grafico*.svg
+relatorio*.pdf
+grafico_personalizado.*
+
 # Configurações de IDE/editor
 .idea/
 .vscode/
