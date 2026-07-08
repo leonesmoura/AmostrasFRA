@@ -1018,7 +1018,13 @@ class IVTable(PasteableTable):
 
 
 class IVTab(QWidget):
-    """Aba "Curva I-V": entrada, lista de curvas, parâmetros e gráfico."""
+    """Aba "Curva I-V": entrada e gráficos das curvas das amostras.
+
+    As curvas exibidas seguem as **amostras marcadas na lista lateral
+    "Medições"** — as amostras são compartilhadas entre o FRA (EIS) e
+    a curva I-V.  Uma amostra que só tem FRA (sem curva I-V) não
+    aparece no gráfico desta aba.
+    """
 
     def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
@@ -1028,9 +1034,10 @@ class IVTab(QWidget):
         hint = QLabel(
             "Digite ou cole (Ctrl+V) pares de tensão e corrente da "
             "varredura I-V do módulo — a potência é calculada "
-            "automaticamente. Use \"Adicionar como curva\" para criar "
-            "a curva; Isc, Voc, Pmáx, Vmp, Imp e FF são extraídos "
-            "automaticamente.",
+            "automaticamente. \"Adicionar como curva\" cria/associa a "
+            "curva a uma amostra; \"Atualizar\" substitui a curva da "
+            "amostra selecionada na lista lateral. As curvas ficam "
+            "atreladas às amostras (mesma lista do FRA).",
             self,
         )
         hint.setWordWrap(True)
@@ -1044,10 +1051,24 @@ class IVTab(QWidget):
         add_rows_button.clicked.connect(lambda: self.table.add_rows(20))
         clear_button = QPushButton("Limpar tabela", self)
         clear_button.clicked.connect(self.table.clear_all)
-        add_curve_button = QPushButton("Adicionar como curva", self)
+        load_button = QPushButton("Carregar curva na tabela", self)
+        load_button.setToolTip(
+            "Carrega na tabela a curva I-V da amostra selecionada na "
+            "lista lateral \"Medições\"."
+        )
+        load_button.clicked.connect(self._on_load)
+        add_curve_button = QPushButton("Adicionar como curva I-V", self)
+        add_curve_button.setToolTip(
+            "Cria a curva I-V com os dados da tabela e a associa a uma "
+            "amostra (nova ou existente, pelo nome)."
+        )
         add_curve_button.clicked.connect(self._on_add_curve)
         update_curve_button = QPushButton(
-            "Atualizar curva selecionada", self
+            "Atualizar curva da amostra selec.", self
+        )
+        update_curve_button.setToolTip(
+            "Substitui a curva I-V da amostra selecionada na lista "
+            "lateral pelos dados da tabela."
         )
         update_curve_button.clicked.connect(self._on_update_curve)
         export_button = QPushButton("Exportar Excel…", self)
@@ -1057,6 +1078,7 @@ class IVTab(QWidget):
         entry_buttons1.addWidget(import_button)
         entry_buttons1.addWidget(add_rows_button)
         entry_buttons1.addWidget(clear_button)
+        entry_buttons1.addWidget(load_button)
         entry_buttons2 = QHBoxLayout()
         entry_buttons2.addWidget(add_curve_button)
         entry_buttons2.addWidget(update_curve_button)
@@ -1069,25 +1091,17 @@ class IVTab(QWidget):
         entry.addLayout(entry_buttons2)
         entry_widget = QWidget(self)
         entry_widget.setLayout(entry)
-        entry_widget.setMaximumWidth(430)
+        entry_widget.setMaximumWidth(460)
 
-        # -- Curvas ---------------------------------------------------------
-        self.curve_list = QListWidget(self)
-        self.curve_list.setSelectionMode(
-            QAbstractItemView.SelectionMode.ExtendedSelection
+        # -- Gráfico -------------------------------------------------------
+        right_hint = QLabel(
+            "As curvas exibidas seguem as amostras marcadas na lista "
+            "lateral \"Medições\". Amostras sem curva I-V não aparecem. "
+            "Cor, fundo e estilo vêm do dock \"Estilo dos gráficos\".",
+            self,
         )
-        self.curve_list.setMaximumHeight(140)
-        self.curve_list.itemChanged.connect(
-            lambda _item: self.refresh()
-        )
-        rename_button = QPushButton("Renomear", self)
-        rename_button.clicked.connect(self._on_rename)
-        duplicate_button = QPushButton("Duplicar", self)
-        duplicate_button.clicked.connect(self._on_duplicate)
-        remove_button = QPushButton("Remover", self)
-        remove_button.clicked.connect(self._on_remove)
-        load_button = QPushButton("Carregar na tabela", self)
-        load_button.clicked.connect(self._on_load)
+        right_hint.setWordWrap(True)
+        right_hint.setStyleSheet("color: #9a9a9a;")
 
         self.power_checkbox = QCheckBox(
             "Mostrar P×V (eixo direito)", self
@@ -1106,7 +1120,7 @@ class IVTab(QWidget):
 
         self.params_table = QTableWidget(0, 7, self)
         self.params_table.setHorizontalHeaderLabels(
-            ["Curva", "Isc (A)", "Voc (V)", "Pmáx (W)", "Vmp (V)",
+            ["Amostra", "Isc (A)", "Voc (V)", "Pmáx (W)", "Vmp (V)",
              "Imp (A)", "FF"]
         )
         self.params_table.horizontalHeader().setSectionResizeMode(
@@ -1118,19 +1132,14 @@ class IVTab(QWidget):
         )
         self.params_table.setMaximumHeight(170)
 
-        curve_buttons = QHBoxLayout()
-        curve_buttons.addWidget(load_button)
-        curve_buttons.addWidget(rename_button)
-        curve_buttons.addWidget(duplicate_button)
-        curve_buttons.addWidget(remove_button)
-        curve_buttons.addStretch(1)
-        curve_buttons.addWidget(self.power_checkbox)
-        curve_buttons.addWidget(self.pmax_checkbox)
+        options_row = QHBoxLayout()
+        options_row.addStretch(1)
+        options_row.addWidget(self.power_checkbox)
+        options_row.addWidget(self.pmax_checkbox)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Curvas I-V (marque para exibir):", self))
-        right.addWidget(self.curve_list)
-        right.addLayout(curve_buttons)
+        right.addWidget(right_hint)
+        right.addLayout(options_row)
         right.addWidget(self.canvas, 1)
         right.addWidget(self.params_table)
         right_widget = QWidget(self)
@@ -1142,58 +1151,8 @@ class IVTab(QWidget):
 
     # -- Curvas da sessão -----------------------------------------------------
     def checked_curves(self) -> list[util.IVCurve]:
-        """Curvas marcadas na lista, em ordem."""
-        result: list[util.IVCurve] = []
-        for index in range(self.curve_list.count()):
-            item = self.curve_list.item(index)
-            if item.checkState() == Qt.CheckState.Checked:
-                curve = self._window.iv_curves.get(item.text())
-                if curve is not None:
-                    result.append(curve)
-        return result
-
-    def _selected_item(self) -> Optional[QListWidgetItem]:
-        items = self.curve_list.selectedItems()
-        if not items:
-            QMessageBox.information(
-                self,
-                "Curvas I-V",
-                "Selecione uma curva na lista primeiro.",
-            )
-            return None
-        return items[0]
-
-    def add_curve(
-        self, curve: util.IVCurve, checked: bool = True
-    ) -> None:
-        """Adiciona uma curva I-V à sessão (nome tornado único)."""
-        name = unique_name(
-            curve.name, list(self._window.iv_curves.keys())
-        )
-        if name != curve.name:
-            curve = curve.copy(new_name=name)
-        self._window.iv_curves[name] = curve
-        self.curve_list.blockSignals(True)
-        try:
-            item = QListWidgetItem(name, self.curve_list)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked
-                if checked
-                else Qt.CheckState.Unchecked
-            )
-        finally:
-            self.curve_list.blockSignals(False)
-        logger.info(
-            "Curva I-V adicionada: '%s' (%d pontos).",
-            name,
-            curve.n_points,
-        )
-        self.refresh()
-        self._window.show_status(
-            f"Curva I-V '{name}' adicionada ({curve.n_points} pontos; "
-            f"Pmáx = {curve.p_max:.4g} W)."
-        )
+        """Curvas I-V das amostras marcadas na lista lateral."""
+        return self._window.checked_iv_curves()
 
     # -- Ações de entrada -------------------------------------------------------
     def build_curve(self, name: str) -> util.IVCurve:
@@ -1207,10 +1166,13 @@ class IVTab(QWidget):
         return util.IVCurve.from_rows(name, rows)
 
     def _on_add_curve(self) -> None:
+        default = self._window.selected_sample_name(warn=False) or ""
         name, ok = QInputDialog.getText(
             self,
             "Nova curva I-V",
-            "Nome da curva (ex.: IV 0 pancadas):",
+            "Nome da amostra (para associar a uma amostra existente, "
+            "use o mesmo nome):",
+            text=default,
         )
         if not ok or not name.strip():
             return
@@ -1219,21 +1181,22 @@ class IVTab(QWidget):
         except ValueError as exc:
             QMessageBox.warning(self, "Nova curva I-V", str(exc))
             return
-        self.add_curve(curve)
+        self._window.add_iv_curve(curve)
 
     def _on_update_curve(self) -> None:
-        item = self._selected_item()
-        if item is None:
+        name = self._window.selected_sample_name()
+        if name is None:
             return
         try:
-            curve = self.build_curve(item.text())
+            curve = self.build_curve(name)
         except ValueError as exc:
             QMessageBox.warning(self, "Atualizar curva", str(exc))
             return
-        self._window.iv_curves[item.text()] = curve
+        self._window.iv_curves[name] = curve
+        self._window.update_sample_tooltip(name)
         self.refresh()
         self._window.show_status(
-            f"Curva I-V '{item.text()}' atualizada."
+            f"Curva I-V da amostra '{name}' atualizada."
         )
 
     def _on_import(self) -> None:
@@ -1279,7 +1242,7 @@ class IVTab(QWidget):
             )
             if answer == QMessageBox.StandardButton.Yes:
                 for curve in curves:
-                    self.add_curve(curve, checked=True)
+                    self._window.add_iv_curve(curve, checked=True)
                 self._window.show_status(
                     f"{len(curves)} curvas I-V importadas de '{path}'."
                 )
@@ -1301,11 +1264,18 @@ class IVTab(QWidget):
         )
 
     def _on_load(self) -> None:
-        item = self._selected_item()
-        if item is None:
+        """Carrega na tabela a curva I-V da amostra selecionada."""
+        name = self._window.selected_sample_name()
+        if name is None:
             return
-        curve = self._window.iv_curves.get(item.text())
+        curve = self._window.iv_curves.get(name)
         if curve is None:
+            QMessageBox.information(
+                self,
+                "Curva I-V",
+                f"A amostra '{name}' não tem curva I-V. Cole os dados "
+                "e use \"Adicionar como curva I-V\" para criar uma.",
+            )
             return
         self.table.set_rows(
             [
@@ -1313,72 +1283,9 @@ class IVTab(QWidget):
                 for v, i in zip(curve.voltage, curve.current)
             ]
         )
-
-    # -- Gerência da lista ---------------------------------------------------------
-    def _on_rename(self) -> None:
-        item = self._selected_item()
-        if item is None:
-            return
-        old_name = item.text()
-        new_name, ok = QInputDialog.getText(
-            self, "Renomear curva", "Novo nome:", text=old_name
+        self._window.show_status(
+            f"Curva I-V da amostra '{name}' carregada na tabela."
         )
-        new_name = new_name.strip()
-        if not ok or not new_name or new_name == old_name:
-            return
-        if new_name in self._window.iv_curves:
-            QMessageBox.warning(
-                self,
-                "Renomear curva",
-                f"Já existe uma curva chamada '{new_name}'.",
-            )
-            return
-        curve = self._window.iv_curves.pop(old_name)
-        self._window.iv_curves[new_name] = curve.copy(new_name=new_name)
-        self.curve_list.blockSignals(True)
-        try:
-            item.setText(new_name)
-        finally:
-            self.curve_list.blockSignals(False)
-        self.refresh()
-
-    def _on_duplicate(self) -> None:
-        item = self._selected_item()
-        if item is None:
-            return
-        curve = self._window.iv_curves.get(item.text())
-        if curve is None:
-            return
-        self.add_curve(
-            curve.copy(new_name=f"{curve.name} (cópia)"), checked=False
-        )
-
-    def _on_remove(self) -> None:
-        items = self.curve_list.selectedItems()
-        if not items:
-            QMessageBox.information(
-                self,
-                "Curvas I-V",
-                "Selecione ao menos uma curva para remover.",
-            )
-            return
-        names = [item.text() for item in items]
-        answer = QMessageBox.question(
-            self,
-            "Remover curvas",
-            "Remover as curvas selecionadas?\n\n" + "\n".join(names),
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        for name in names:
-            self._window.iv_curves.pop(name, None)
-        self.curve_list.blockSignals(True)
-        try:
-            for item in items:
-                self.curve_list.takeItem(self.curve_list.row(item))
-        finally:
-            self.curve_list.blockSignals(False)
-        self.refresh()
 
     def _on_export_excel(self) -> None:
         curves = self.checked_curves()
@@ -1386,7 +1293,8 @@ class IVTab(QWidget):
             QMessageBox.information(
                 self,
                 "Exportar curvas I-V",
-                "Marque ao menos uma curva na lista.",
+                "Marque ao menos uma amostra (com curva I-V) na lista "
+                "lateral.",
             )
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -1425,7 +1333,7 @@ class IVTab(QWidget):
                     curve.voltage,
                     curve.current,
                     label=curve.name,
-                    **style.line_kwargs(),
+                    **style.line_kwargs_for(curve.name),
                 )
                 color_map[curve.name] = line.get_color()
                 if annotate:
@@ -3573,9 +3481,11 @@ class MainWindow(QMainWindow):
         )
 
         hint = QLabel(
-            "Marque as medições para exibi-las nos gráficos. Clique "
-            "duas vezes para carregar na tabela. Selecione e use "
-            "\"Cor da curva…\" para escolher a cor.",
+            "Amostras compartilhadas entre FRA e Curva I-V — cada uma "
+            "pode ter FRA, curva I-V ou ambos (passe o mouse para ver). "
+            "Marque para exibir nos gráficos (Nyquist/Bode e I-V). "
+            "Clique duas vezes para carregar o FRA na tabela; use "
+            "\"Cor da curva…\" para a cor.",
             self,
         )
         hint.setWordWrap(True)
@@ -3967,7 +3877,7 @@ class MainWindow(QMainWindow):
 
     # -- Gerência de medições ------------------------------------------------
     def checked_measurements(self) -> list[Measurement]:
-        """Medições marcadas na lista lateral, em ordem."""
+        """Medições (FRA/EIS) das amostras marcadas na lista lateral."""
         result: list[Measurement] = []
         for index in range(self.measurement_list.count()):
             item = self.measurement_list.item(index)
@@ -3977,22 +3887,45 @@ class MainWindow(QMainWindow):
                     result.append(measurement)
         return result
 
-    def add_measurement(
-        self, measurement: Measurement, checked: bool = True
-    ) -> None:
-        """Adiciona uma medição à sessão (nome tornado único).
+    def checked_iv_curves(self) -> list[util.IVCurve]:
+        """Curvas I-V das amostras marcadas na lista lateral."""
+        result: list[util.IVCurve] = []
+        for index in range(self.measurement_list.count()):
+            item = self.measurement_list.item(index)
+            if item.checkState() == Qt.CheckState.Checked:
+                curve = self.iv_curves.get(item.text())
+                if curve is not None:
+                    result.append(curve)
+        return result
 
-        Args:
-            measurement: Medição a adicionar.
-            checked: Se a medição inicia marcada para exibição.
+    def sample_names(self) -> list[str]:
+        """Nomes das amostras na lista lateral, em ordem."""
+        return [
+            self.measurement_list.item(i).text()
+            for i in range(self.measurement_list.count())
+        ]
+
+    def _ensure_sample_item(
+        self, name: str, checked: bool
+    ) -> QListWidgetItem:
+        """Encontra o item da amostra ``name`` na lista (ou o cria).
+
+        Se o item já existe (amostra com FRA ou I-V), ele é reutilizado
+        — apenas é marcado quando ``checked`` for verdadeiro.
         """
-        name = unique_name(
-            measurement.name, list(self.measurements.keys())
-        )
-        if name != measurement.name:
-            measurement = measurement.copy(new_name=name)
-        self.measurements[name] = measurement
-
+        for index in range(self.measurement_list.count()):
+            item = self.measurement_list.item(index)
+            if item.text() == name:
+                if (
+                    checked
+                    and item.checkState() != Qt.CheckState.Checked
+                ):
+                    self.measurement_list.blockSignals(True)
+                    try:
+                        item.setCheckState(Qt.CheckState.Checked)
+                    finally:
+                        self.measurement_list.blockSignals(False)
+                return item
         self.measurement_list.blockSignals(True)
         try:
             item = QListWidgetItem(name, self.measurement_list)
@@ -4006,6 +3939,39 @@ class MainWindow(QMainWindow):
             )
         finally:
             self.measurement_list.blockSignals(False)
+        return item
+
+    def update_sample_tooltip(self, name: str) -> None:
+        """Atualiza a dica do item indicando o que a amostra contém."""
+        contents: list[str] = []
+        if name in self.measurements:
+            contents.append("FRA/EIS")
+        if name in self.iv_curves:
+            contents.append("Curva I-V")
+        tip = f"{name}: {' + '.join(contents) or 'vazia'}"
+        for index in range(self.measurement_list.count()):
+            item = self.measurement_list.item(index)
+            if item.text() == name:
+                item.setToolTip(tip)
+                return
+
+    def add_measurement(
+        self, measurement: Measurement, checked: bool = True
+    ) -> None:
+        """Adiciona/associa uma medição (FRA/EIS) a uma amostra.
+
+        Args:
+            measurement: Medição a adicionar.
+            checked: Se a amostra inicia marcada para exibição.
+        """
+        name = unique_name(
+            measurement.name, list(self.measurements.keys())
+        )
+        if name != measurement.name:
+            measurement = measurement.copy(new_name=name)
+        self.measurements[name] = measurement
+        self._ensure_sample_item(name, checked)
+        self.update_sample_tooltip(name)
 
         logger.info(
             "Medição adicionada: '%s' (%d pontos).",
@@ -4014,22 +3980,65 @@ class MainWindow(QMainWindow):
         )
         self._sync_measurement_widgets()
         self.refresh_plots()
+        self.iv_tab.refresh()
         self.show_status(
             f"Medição '{name}' adicionada "
             f"({measurement.n_points} pontos)."
         )
 
-    def _selected_list_item(self) -> Optional[QListWidgetItem]:
+    def add_iv_curve(
+        self, curve: util.IVCurve, checked: bool = True
+    ) -> None:
+        """Adiciona/associa uma curva I-V a uma amostra.
+
+        Se já existir uma amostra com o mesmo nome (por exemplo, com um
+        FRA), a curva I-V é associada a ela; caso contrário, cria uma
+        nova amostra.
+
+        Args:
+            curve: Curva a adicionar.
+            checked: Se a amostra inicia marcada para exibição.
+        """
+        # Nome único apenas entre as curvas I-V; nomes que coincidem
+        # com amostras de FRA são atrelados (associação FRA↔I-V).
+        name = unique_name(curve.name, list(self.iv_curves.keys()))
+        if name != curve.name:
+            curve = curve.copy(new_name=name)
+        self.iv_curves[name] = curve
+        self._ensure_sample_item(name, checked)
+        self.update_sample_tooltip(name)
+
+        logger.info(
+            "Curva I-V adicionada: '%s' (%d pontos).",
+            name,
+            curve.n_points,
+        )
+        self._sync_measurement_widgets()
+        self.iv_tab.refresh()
+        self.show_status(
+            f"Curva I-V '{name}' associada à amostra "
+            f"({curve.n_points} pontos; Pmáx = {curve.p_max:.4g} W)."
+        )
+
+    def _selected_list_item(
+        self, warn: bool = True
+    ) -> Optional[QListWidgetItem]:
         """Item atualmente selecionado na lista (ou None)."""
         items = self.measurement_list.selectedItems()
         if not items:
-            QMessageBox.information(
-                self,
-                "Medições",
-                "Selecione uma medição na lista lateral primeiro.",
-            )
+            if warn:
+                QMessageBox.information(
+                    self,
+                    "Amostras",
+                    "Selecione uma amostra na lista lateral primeiro.",
+                )
             return None
         return items[0]
+
+    def selected_sample_name(self, warn: bool = True) -> Optional[str]:
+        """Nome da amostra selecionada na lista lateral (ou None)."""
+        item = self._selected_list_item(warn=warn)
+        return item.text() if item is not None else None
 
     def _update_selected_measurement(
         self, template: Measurement
@@ -4098,17 +4107,21 @@ class MainWindow(QMainWindow):
         new_name = new_name.strip()
         if not ok or not new_name or new_name == old_name:
             return
-        if new_name in self.measurements:
+        if new_name in self.measurements or new_name in self.iv_curves:
             QMessageBox.warning(
                 self,
-                "Renomear medição",
-                f"Já existe uma medição chamada '{new_name}'.",
+                "Renomear amostra",
+                f"Já existe uma amostra chamada '{new_name}'.",
             )
             return
-        measurement = self.measurements.pop(old_name)
-        self.measurements[new_name] = measurement.copy(
-            new_name=new_name
-        )
+        if old_name in self.measurements:
+            measurement = self.measurements.pop(old_name)
+            self.measurements[new_name] = measurement.copy(
+                new_name=new_name
+            )
+        if old_name in self.iv_curves:
+            curve = self.iv_curves.pop(old_name)
+            self.iv_curves[new_name] = curve.copy(new_name=new_name)
         if old_name in self.kk_results:
             kk_result = self.kk_results.pop(old_name)
             kk_result.measurement_name = new_name
@@ -4124,45 +4137,63 @@ class MainWindow(QMainWindow):
             item.setText(new_name)
         finally:
             self.measurement_list.blockSignals(False)
+        self.update_sample_tooltip(new_name)
         logger.info(
-            "Medição renomeada: '%s' → '%s'.", old_name, new_name
+            "Amostra renomeada: '%s' → '%s'.", old_name, new_name
         )
         self._sync_measurement_widgets()
         self.refresh_plots()
+        self.iv_tab.refresh()
 
     def _duplicate_selected_measurement(self) -> None:
-        """Duplica a medição selecionada."""
+        """Duplica a amostra selecionada (FRA e/ou curva I-V)."""
         item = self._selected_list_item()
         if item is None:
             return
-        measurement = self.measurements.get(item.text())
-        if measurement is None:
-            return
-        duplicate = measurement.copy(
-            new_name=f"{measurement.name} (cópia)"
+        old_name = item.text()
+        new_name = unique_name(
+            f"{old_name} (cópia)",
+            list(self.measurements) + list(self.iv_curves),
         )
-        self.add_measurement(duplicate, checked=False)
+        measurement = self.measurements.get(old_name)
+        curve = self.iv_curves.get(old_name)
+        if measurement is None and curve is None:
+            return
+        if measurement is not None:
+            self.measurements[new_name] = measurement.copy(
+                new_name=new_name
+            )
+        if curve is not None:
+            self.iv_curves[new_name] = curve.copy(new_name=new_name)
+        self._ensure_sample_item(new_name, checked=False)
+        self.update_sample_tooltip(new_name)
+        self._sync_measurement_widgets()
+        self.refresh_plots()
+        self.iv_tab.refresh()
+        self.show_status(f"Amostra '{new_name}' criada por duplicação.")
 
     def _remove_selected_measurements(self) -> None:
-        """Remove as medições selecionadas (com confirmação)."""
+        """Remove as amostras selecionadas (FRA e curva I-V)."""
         items = self.measurement_list.selectedItems()
         if not items:
             QMessageBox.information(
                 self,
-                "Medições",
-                "Selecione ao menos uma medição para remover.",
+                "Amostras",
+                "Selecione ao menos uma amostra para remover.",
             )
             return
         names = [item.text() for item in items]
         answer = QMessageBox.question(
             self,
-            "Remover medições",
-            "Remover as medições selecionadas?\n\n" + "\n".join(names),
+            "Remover amostras",
+            "Remover as amostras selecionadas (FRA e curva I-V)?\n\n"
+            + "\n".join(names),
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
         for name in names:
             self.measurements.pop(name, None)
+            self.iv_curves.pop(name, None)
             self.kk_results.pop(name, None)
             self.fit_results.pop(name, None)
             self.curve_colors.pop(name, None)
@@ -4174,12 +4205,13 @@ class MainWindow(QMainWindow):
                 )
         finally:
             self.measurement_list.blockSignals(False)
-        logger.info("Medições removidas: %s.", ", ".join(names))
+        logger.info("Amostras removidas: %s.", ", ".join(names))
         self._sync_measurement_widgets()
         self.refresh_plots()
+        self.iv_tab.refresh()
 
     def _set_all_checked(self, checked: bool) -> None:
-        """Marca/desmarca todas as medições da lista."""
+        """Marca/desmarca todas as amostras da lista."""
         state = (
             Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         )
@@ -4190,6 +4222,7 @@ class MainWindow(QMainWindow):
         finally:
             self.measurement_list.blockSignals(False)
         self.refresh_plots()
+        self.iv_tab.refresh()
 
     def _set_selected_curve_color(self) -> None:
         """Escolhe a cor das medições selecionadas na lista."""
@@ -4204,7 +4237,7 @@ class MainWindow(QMainWindow):
         names = [item.text() for item in items]
         initial = QColor(self.curve_colors.get(names[0], "#4fc3f7"))
         chosen = QColorDialog.getColor(
-            initial, self, "Cor da(s) medição(ões)"
+            initial, self, "Cor da(s) amostra(s)"
         )
         if not chosen.isValid():
             return
@@ -4212,9 +4245,10 @@ class MainWindow(QMainWindow):
             self.curve_colors[name] = chosen.name()
         self._apply_list_item_colors()
         self.refresh_plots()
+        self.iv_tab.refresh()
 
     def _clear_selected_curve_color(self) -> None:
-        """Volta as medições selecionadas às cores automáticas."""
+        """Volta as amostras selecionadas às cores automáticas."""
         items = self.measurement_list.selectedItems()
         if not items:
             return
@@ -4222,6 +4256,7 @@ class MainWindow(QMainWindow):
             self.curve_colors.pop(item.text(), None)
         self._apply_list_item_colors()
         self.refresh_plots()
+        self.iv_tab.refresh()
 
     def _apply_list_item_colors(self) -> None:
         """Colore o texto dos itens conforme a cor da curva."""
@@ -4234,8 +4269,9 @@ class MainWindow(QMainWindow):
     def _on_measurement_item_changed(
         self, _item: QListWidgetItem
     ) -> None:
-        """Reage à marcação/desmarcação de medições."""
+        """Reage à marcação/desmarcação de amostras."""
         self.refresh_plots()
+        self.iv_tab.refresh()
 
     def _sync_measurement_widgets(self) -> None:
         """Sincroniza combos e a lista da aba de comparação."""

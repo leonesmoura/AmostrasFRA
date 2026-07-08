@@ -94,18 +94,25 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   ignorado. O software calcula `|Z| = V/I` e permite **criar uma
   medição** ou **enviar os pontos à tabela de dados**. Usa a
   `QtSerialPort` embutida no PySide6 (sem dependência extra).
-- **Curva I-V do módulo** (aba "Curva I-V"): tipo de entrada dedicado,
-  apenas com tensão e corrente (a potência ``P = V·I`` é calculada
-  automaticamente). Suporta digitação, colagem e importação
-  (CSV/TXT/XLSX/ODS, com reconhecimento dos cabeçalhos de tensão e
-  corrente em qualquer ordem), múltiplas curvas em lista com caixas de
-  seleção, gráfico I×V com P×V no eixo direito e marcação do ponto de
+- **Amostras compartilhadas entre FRA e I-V**: a lista lateral
+  "Medições" é única — cada amostra pode ter um espectro FRA/EIS, uma
+  curva I-V ou ambos (o *tooltip* mostra o conteúdo). Marcar uma
+  amostra a exibe onde ela tiver dados: nos diagramas de Nyquist/Bode
+  (se tiver FRA) e na aba Curva I-V (se tiver curva I-V). Uma amostra
+  só com FRA fica vazia na aba I-V, e vice-versa. Renomear, remover,
+  duplicar e a cor da curva aplicam-se à amostra inteira (FRA + I-V).
+- **Curva I-V do módulo** (aba "Curva I-V"): entrada apenas com tensão
+  e corrente (a potência ``P = V·I`` é calculada automaticamente). As
+  curvas exibidas seguem as amostras marcadas na lista lateral.
+  Suporta digitação, colagem e importação (CSV/TXT/XLSX/ODS, com
+  reconhecimento dos cabeçalhos de tensão e corrente em qualquer
+  ordem), gráfico I×V com P×V no eixo direito e marcação do ponto de
   máxima potência, parâmetros extraídos automaticamente (Isc, Voc,
   Pmáx, Vmp, Imp e fator de forma FF) e exportação para Excel. A
   importação reconhece o **formato de matriz** — uma coluna de tensão
   compartilhada e várias colunas de corrente (uma curva por coluna,
   nomeada pelo cabeçalho, ex.: `Tensão | 0 falha | 1 Falha | …`) — e
-  cria todas as curvas de uma vez.
+  cria todas as amostras de uma vez.
 - **Criador de gráficos** (Ferramentas → Criador de gráficos…):
   janelas independentes para compor gráficos de publicação com
   qualquer quantidade de medições (ex.: ganho e fase de Bode de 30
