@@ -1237,6 +1237,14 @@ class IVTab(QWidget):
         )
 
     def _on_import(self) -> None:
+        """Importa curva(s) I-V de um arquivo.
+
+        Arquivos em formato de matriz (uma coluna de tensão e várias
+        colunas de corrente, cada uma uma curva) são reconhecidos: o
+        programa oferece adicionar todas as curvas separadamente à
+        lista.  Arquivos simples de duas colunas são carregados na
+        tabela para edição.
+        """
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Importar curva I-V",
@@ -1246,6 +1254,37 @@ class IVTab(QWidget):
         )
         if not path:
             return
+
+        curves: list[util.IVCurve] = []
+        try:
+            curves = util.load_iv_curves_from_file(path)
+        except (ValueError, OSError, ImportError) as exc:
+            logger.warning(
+                "Falha ao detectar múltiplas curvas I-V em '%s': %s",
+                path,
+                exc,
+            )
+
+        if len(curves) >= 2:
+            names = ", ".join(c.name for c in curves)
+            answer = QMessageBox.question(
+                self,
+                "Importar curva I-V",
+                f"O arquivo contém {len(curves)} curvas:\n{names}\n\n"
+                "Adicionar todas como curvas separadas na lista?\n"
+                "(Escolha \"Não\" para carregar apenas a 1ª na tabela.)",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                for curve in curves:
+                    self.add_curve(curve, checked=True)
+                self._window.show_status(
+                    f"{len(curves)} curvas I-V importadas de '{path}'."
+                )
+                return
+
         try:
             rows = util.load_iv_table_from_file(path)
         except (ValueError, OSError, ImportError) as exc:

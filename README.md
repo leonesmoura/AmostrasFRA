@@ -101,7 +101,11 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
   corrente em qualquer ordem), múltiplas curvas em lista com caixas de
   seleção, gráfico I×V com P×V no eixo direito e marcação do ponto de
   máxima potência, parâmetros extraídos automaticamente (Isc, Voc,
-  Pmáx, Vmp, Imp e fator de forma FF) e exportação para Excel.
+  Pmáx, Vmp, Imp e fator de forma FF) e exportação para Excel. A
+  importação reconhece o **formato de matriz** — uma coluna de tensão
+  compartilhada e várias colunas de corrente (uma curva por coluna,
+  nomeada pelo cabeçalho, ex.: `Tensão | 0 falha | 1 Falha | …`) — e
+  cria todas as curvas de uma vez.
 - **Criador de gráficos** (Ferramentas → Criador de gráficos…):
   janelas independentes para compor gráficos de publicação com
   qualquer quantidade de medições (ex.: ganho e fase de Bode de 30

@@ -995,6 +995,175 @@ def load_iv_table_from_file(
     return result
 
 
+#: Padrões (regex, minúsculas) do cabeçalho da coluna de tensão (I-V).
+_IV_VOLTAGE_PATTERNS: tuple[str, ...] = (
+    r"tens", r"volt", r"\bv\b", r"\bu\b", r"bias", r"\bvolts?\b",
+)
+
+#: Padrões (regex, minúsculas) do cabeçalho da coluna de corrente.
+_IV_CURRENT_PATTERNS: tuple[str, ...] = (
+    r"corrente", r"current", r"\bi\b", r"\bamp", r"\bcurr\b", r"\ba\b",
+)
+
+#: Rótulos genéricos ignorados ao nomear as curvas de uma matriz I-V.
+_IV_GENERIC_LABELS: frozenset[str] = frozenset({
+    "tensao", "tensão", "voltage", "volt", "v", "u", "bias",
+    "corrente", "current", "i", "amp", "curr", "a",
+    "potencia", "potência", "power", "p", "w",
+})
+
+
+def _read_matrix_rows(file_path: Path) -> list[list[str]]:
+    """Lê um arquivo tabular preservando os textos (linhas não vazias).
+
+    Raises:
+        ValueError: Se a extensão não for suportada.
+    """
+    suffix = file_path.suffix.lower()
+    if suffix in {".csv", ".txt", ".dat"}:
+        text = _read_text_any_encoding(file_path)
+        delimiter = detect_delimiter(text)
+        raw = [
+            _split_line(line, delimiter)
+            for line in text.splitlines()
+        ]
+    elif suffix in {".xlsx", ".xlsm", ".ods"}:
+        engine = "odf" if suffix == ".ods" else None
+        df = pd.read_excel(
+            file_path, header=None, dtype=object, engine=engine
+        )
+        raw = _dataframe_to_raw(df)
+    else:
+        raise ValueError(
+            f"Extensão de arquivo não suportada: '{suffix}'. Use CSV, "
+            "TXT, XLSX ou ODS."
+        )
+    return [
+        row for row in raw if any(str(cell).strip() for cell in row)
+    ]
+
+
+def _find_header_column(
+    header_rows: Sequence[Sequence[str]], patterns: tuple[str, ...]
+) -> Optional[int]:
+    """Índice da 1ª coluna cujo cabeçalho casa um dos padrões."""
+    for tokens in header_rows:
+        for index, cell in enumerate(tokens):
+            lowered = str(cell).strip().lower()
+            if not lowered:
+                continue
+            for pattern in patterns:
+                if re.search(pattern, lowered):
+                    return index
+    return None
+
+
+def _matrix_column_name(
+    header_rows: Sequence[Sequence[str]], column: int
+) -> str:
+    """Nome de uma coluna de corrente (usa o rótulo mais específico).
+
+    Percorre os cabeçalhos de baixo para cima e usa o primeiro rótulo
+    não genérico (ex.: ``"0 falha"``); recorre a ``"Curva N"`` se só
+    houver rótulos genéricos (``"Corrente"``).
+    """
+    for tokens in reversed(list(header_rows)):
+        if column < len(tokens):
+            cell = str(tokens[column]).strip()
+            if cell and cell.lower() not in _IV_GENERIC_LABELS:
+                return cell
+    return f"Curva {column}"
+
+
+def load_iv_curves_from_file(path: str | Path) -> list["IVCurve"]:
+    """Lê curvas I-V de um arquivo, inclusive no formato de matriz.
+
+    Reconhece o formato de **matriz**: uma coluna de tensão
+    compartilhada e várias colunas de corrente, cada uma uma curva
+    (por exemplo, ``Tensão | 0 falha | 1 Falha | …``), retornando uma
+    :class:`IVCurve` por coluna de corrente, nomeada pelo cabeçalho.
+    Arquivos simples de duas colunas retornam uma única curva.
+
+    Args:
+        path: Caminho do arquivo (CSV, TXT, XLSX ou ODS).
+
+    Returns:
+        Lista de curvas I-V (vazia se nenhuma coluna de corrente com
+        pontos suficientes for encontrada).
+
+    Raises:
+        ValueError: Se a extensão não for suportada ou o arquivo não
+            contiver dados numéricos.
+    """
+    rows = _read_matrix_rows(Path(path))
+    if not rows:
+        raise ValueError("O arquivo está vazio.")
+
+    header_rows: list[list[str]] = []
+    data_rows: list[list[Optional[float]]] = []
+    started = False
+    for tokens in rows:
+        parsed = [parse_number(cell) for cell in tokens]
+        if sum(value is not None for value in parsed) >= 2:
+            started = True
+            data_rows.append(parsed)
+        elif not started:
+            header_rows.append(list(tokens))
+    if not data_rows:
+        raise ValueError(
+            "Nenhuma linha de dados numéricos foi encontrada no arquivo."
+        )
+
+    width = max(len(row) for row in data_rows)
+    volt_col = _find_header_column(header_rows, _IV_VOLTAGE_PATTERNS)
+    if volt_col is None or volt_col >= width:
+        volt_col = 0
+
+    current_cols = [
+        c
+        for c in range(width)
+        if c != volt_col
+        and any(c < len(row) and row[c] is not None for row in data_rows)
+    ]
+
+    curves: list[IVCurve] = []
+    used_names: list[str] = []
+    for column in current_cols:
+        voltage: list[float] = []
+        current: list[float] = []
+        for row in data_rows:
+            v = row[volt_col] if volt_col < len(row) else None
+            i = row[column] if column < len(row) else None
+            if v is None or i is None:
+                continue
+            voltage.append(v)
+            current.append(i)
+        if len(voltage) < 3:
+            continue
+        name = unique_name(
+            _matrix_column_name(header_rows, column), used_names
+        )
+        used_names.append(name)
+        try:
+            curves.append(
+                IVCurve(
+                    name=name,
+                    voltage=np.asarray(voltage),
+                    current=np.asarray(current),
+                )
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Coluna '%s' ignorada na importação I-V: %s", name, exc
+            )
+    logger.info(
+        "Importadas %d curva(s) I-V de '%s'.",
+        len(curves),
+        Path(path).name,
+    )
+    return curves
+
+
 def load_table_from_file(path: str | Path) -> list[list[Optional[float]]]:
     """Lê um arquivo de dados e retorna linhas nas colunas canônicas.
 
