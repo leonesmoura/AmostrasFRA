@@ -651,6 +651,8 @@ class DataEntryPanel(QWidget):
     measurementCreated = Signal(object)
     #: Emitido ao atualizar a medição selecionada com dados da tabela.
     measurementUpdated = Signal(object)
+    #: Emitido ao importar curvas I-V de um CSV de sessão (lista).
+    ivCurvesImported = Signal(object)
 
     #: Rótulo do item "sem correção" no seletor de correção.
     _NO_CORRECTION = "Sem correção"
@@ -831,14 +833,30 @@ class DataEntryPanel(QWidget):
                 path,
                 exc,
             )
+        session_iv: list = []
+        try:
+            session_iv = util.load_session_iv_curves(path)
+        except (ValueError, OSError, ImportError) as exc:
+            logger.warning(
+                "Falha ao detectar curvas I-V de sessão em '%s': %s",
+                path,
+                exc,
+            )
 
-        if len(multi) >= 2:
-            names = ", ".join(m.name for m in multi)
+        if len(multi) >= 2 or session_iv:
+            parts: list[str] = []
+            if multi:
+                parts.append(f"{len(multi)} medição(ões) (FRA)")
+            if session_iv:
+                parts.append(f"{len(session_iv)} curva(s) I-V")
+            names = ", ".join(
+                [m.name for m in multi] + [c.name for c in session_iv]
+            )
             answer = QMessageBox.question(
                 self,
                 "Importar dados",
-                f"O arquivo contém {len(multi)} medições:\n{names}\n\n"
-                "Importar como medições separadas na lista lateral?\n"
+                f"O arquivo contém {' e '.join(parts)}:\n{names}\n\n"
+                "Importar como amostras separadas na lista lateral?\n"
                 "(Escolha \"Não\" para carregar tudo na tabela.)",
                 QMessageBox.StandardButton.Yes
                 | QMessageBox.StandardButton.No,
@@ -847,9 +865,13 @@ class DataEntryPanel(QWidget):
             if answer == QMessageBox.StandardButton.Yes:
                 for measurement in multi:
                     self.measurementCreated.emit(measurement)
+                if session_iv:
+                    self.ivCurvesImported.emit(session_iv)
                 logger.info(
-                    "Importadas %d medições separadas de '%s'.",
+                    "Importadas %d medição(ões) e %d curva(s) I-V "
+                    "separadas de '%s'.",
                     len(multi),
+                    len(session_iv),
                     path,
                 )
                 return
@@ -1612,14 +1634,30 @@ class DiodeFitDialog(QDialog):
 
         hint = QLabel(
             "Ajusta o modelo do módulo fotovoltaico real (diodo único, "
-            "cinco parâmetros) à curva I-V:\n"
-            "I = I_L − I₀·[exp((V+I·Rs)/a) − 1] − (V+I·Rs)/Rp.\n"
-            "A convenção de sinal (curva escura ou iluminada) é "
-            "detectada automaticamente.",
+            "cinco parâmetros) à curva I-V. A convenção de sinal (curva "
+            "escura ou iluminada) é detectada automaticamente.",
             self,
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #9a9a9a;")
+
+        equation = QLabel(self)
+        equation.setTextFormat(Qt.TextFormat.RichText)
+        equation.setText(
+            "<div style='font-size:18px; line-height:1.6;'>"
+            "I = I<sub>L</sub> &minus; I<sub>0</sub>&middot;"
+            "[ exp( (V + I&middot;R<sub>s</sub>) / a ) &minus; 1 ] "
+            "&minus; (V + I&middot;R<sub>s</sub>) / R<sub>p</sub>"
+            "</div>"
+        )
+        equation.setWordWrap(True)
+        equation.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        equation.setStyleSheet(
+            "QLabel { color: #e8e8e8;"
+            " background: rgba(255, 255, 255, 0.06);"
+            " border: 1px solid #5a6472; border-radius: 6px;"
+            " padding: 10px; margin: 2px 0; }"
+        )
 
         self.curve_combo = QComboBox(self)
         for name in self._window.sample_names():
@@ -1694,6 +1732,7 @@ class DiodeFitDialog(QDialog):
 
         left = QVBoxLayout()
         left.addWidget(hint)
+        left.addWidget(equation)
         left.addLayout(form)
         left.addLayout(buttons_row)
         left.addWidget(self.params_table, 1)
@@ -3948,6 +3987,9 @@ class MainWindow(QMainWindow):
         self.data_panel.measurementUpdated.connect(
             self._update_selected_measurement
         )
+        self.data_panel.ivCurvesImported.connect(
+            self._on_iv_curves_imported
+        )
 
         self.nyquist_canvas = PlotCanvas(self)
         self.bode_mag_canvas = PlotCanvas(self)
@@ -4553,6 +4595,32 @@ class MainWindow(QMainWindow):
             f"({curve.n_points} pontos; Pmáx = {curve.p_max:.4g} W)."
         )
 
+    def _on_iv_curves_imported(self, curves: "Sequence[util.IVCurve]") -> None:
+        """Restaura curvas I-V vindas de um CSV de sessão (importação).
+
+        Cada curva é associada à amostra de mesmo nome (por exemplo, o
+        FRA recém-importado); nomes sem amostra correspondente criam
+        uma amostra nova.  Atualiza a lista e o gráfico uma única vez.
+        """
+        added = 0
+        for curve in curves:
+            name = unique_name(curve.name, list(self.iv_curves.keys()))
+            if name != curve.name:
+                curve = curve.copy(new_name=name)
+            self.iv_curves[name] = curve
+            self.iv_fit_results.pop(name, None)
+            self._ensure_sample_item(name, checked=True)
+            self.update_sample_tooltip(name)
+            added += 1
+        if added:
+            self._sync_measurement_widgets()
+            self.iv_tab.refresh()
+            logger.info("Importadas %d curva(s) I-V de sessão.", added)
+            self.show_status(
+                f"{added} curva(s) I-V importada(s) e associada(s) às "
+                "amostras."
+            )
+
     def _selected_list_item(
         self, warn: bool = True
     ) -> Optional[QListWidgetItem]:
@@ -5115,9 +5183,21 @@ class MainWindow(QMainWindow):
         self.show_status(f"Excel exportado: {path}")
 
     def _export_csv(self) -> None:
-        """Exporta as medições marcadas para CSV."""
-        measurements = self._measurements_for_export()
-        if not measurements:
+        """Exporta as amostras marcadas (FRA + I-V) para CSV.
+
+        O CSV é autocontido: guarda tanto o espectro FRA quanto a curva
+        I-V de cada amostra (coluna ``Tipo``), permitindo restaurar a
+        sessão inteira ao reimportar.
+        """
+        measurements = self.checked_measurements()
+        iv_curves = self.checked_iv_curves()
+        if not measurements and not iv_curves:
+            QMessageBox.information(
+                self,
+                "Exportar CSV",
+                "Marque ao menos uma amostra (com FRA ou curva I-V) na "
+                "lista lateral.",
+            )
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -5128,7 +5208,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            exportacao.export_measurements_csv(measurements, path)
+            exportacao.export_measurements_csv(
+                measurements, path, iv_curves=iv_curves
+            )
         except (OSError, ValueError) as exc:
             logger.exception("Falha ao exportar CSV.")
             QMessageBox.critical(
@@ -5137,7 +5219,10 @@ class MainWindow(QMainWindow):
                 f"Não foi possível exportar:\n{exc}",
             )
             return
-        self.show_status(f"CSV exportado: {path}")
+        self.show_status(
+            f"CSV exportado: {path} "
+            f"({len(measurements)} FRA, {len(iv_curves)} I-V)."
+        )
 
     def _current_canvas(self) -> Optional[PlotCanvas]:
         """Canvas da aba atualmente visível (ou None)."""

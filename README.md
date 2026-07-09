@@ -20,7 +20,10 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
     (``Medição``, gerada pela exportação CSV/Excel do próprio
     software) são reconhecidos: o programa pergunta se deve recriar
     cada medição separadamente na lista lateral, restaurando a sessão
-    como estava;
+    como estava. O **CSV exportado é autocontido** — guarda tanto o
+    espectro FRA quanto a curva I-V de cada amostra (coluna ``Tipo``
+    com ``EIS``/``I-V``); ao reimportar, o FRA **e** as curvas I-V são
+    restaurados e reassociados às amostras pelo nome;
   - Colunas: `Frequência (Hz)`, `Z' (Ω)`, `-Z'' (Ω)`, `|Z| (Ω)`,
     `Fase (°)`, `Tensão (V)` e `Corrente (A)` — as colunas ausentes são
     calculadas automaticamente em cascata: `Tensão` e `Corrente` geram

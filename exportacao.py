@@ -223,34 +223,50 @@ def export_measurements_csv(
     path: str | Path,
     sep: str = ";",
     decimal: str = ",",
+    iv_curves: Sequence[IVCurve] = (),
 ) -> None:
-    """Exporta medições para CSV (formato pt-BR por padrão).
+    """Exporta medições e curvas I-V para CSV (formato pt-BR).
 
-    Todas as medições são concatenadas com uma coluna ``Medição``.  O
-    padrão ``;`` + vírgula decimal abre corretamente no Excel pt-BR e
-    é reimportável pelo próprio AMOSTRAS FRA.
+    Gera um CSV **autocontido** e reimportável: cada linha traz a
+    coluna ``Medição`` (nome da amostra) e a coluna ``Tipo`` (``EIS``
+    para os pontos de impedância, ``I-V`` para os pontos da curva I-V).
+    Assim a exportação preserva o FRA **e** a curva I-V de cada amostra
+    num único arquivo, e a importação restaura ambos.  O padrão ``;`` +
+    vírgula decimal abre corretamente no Excel pt-BR.
 
     Args:
-        measurements: Medições a exportar (ao menos uma).
+        measurements: Medições (EIS/FRA) a exportar.
         path: Caminho do arquivo ``.csv``.
         sep: Separador de campos.
         decimal: Separador decimal.
+        iv_curves: Curvas I-V a exportar junto (opcional).
 
     Raises:
-        ValueError: Se nenhuma medição for fornecida.
+        ValueError: Se não houver nem medição nem curva I-V.
     """
-    if not measurements:
-        raise ValueError("Nenhuma medição para exportar.")
+    if not measurements and not iv_curves:
+        raise ValueError("Nenhuma medição ou curva I-V para exportar.")
     frames: list[pd.DataFrame] = []
     for m in measurements:
         df = m.to_dataframe()
+        df.insert(0, "Tipo", "EIS")
         df.insert(0, "Medição", m.name)
+        frames.append(df)
+    for curve in iv_curves:
+        df = curve.to_dataframe()
+        df.insert(0, "Tipo", "I-V")
+        df.insert(0, "Medição", curve.name)
         frames.append(df)
     combined = pd.concat(frames, ignore_index=True)
     combined.to_csv(
         path, sep=sep, decimal=decimal, index=False, encoding="utf-8-sig"
     )
-    logger.info("CSV exportado: %s", path)
+    logger.info(
+        "CSV exportado: %s (%d medição(ões), %d curva(s) I-V).",
+        path,
+        len(measurements),
+        len(iv_curves),
+    )
 
 
 def export_correction(

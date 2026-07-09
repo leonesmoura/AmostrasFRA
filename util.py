@@ -1200,6 +1200,148 @@ def _detect_name_column(header_tokens: Sequence[str]) -> Optional[int]:
     return None
 
 
+def _detect_type_column(header_tokens: Sequence[str]) -> Optional[int]:
+    """Índice da coluna ``Tipo`` (EIS/I-V) no cabeçalho, se houver."""
+    for index, token in enumerate(header_tokens):
+        if str(token).strip().lower() in {"tipo", "type"}:
+            return index
+    return None
+
+
+def _source_index_for(
+    column_map: Optional[HeaderMap], canonical: int
+) -> Optional[int]:
+    """Índice de origem mapeado para uma coluna canônica (ou None)."""
+    if not column_map:
+        return None
+    for src, (dst, _unsigned) in column_map.items():
+        if dst == canonical:
+            return src
+    return None
+
+
+def _row_is_iv(
+    tokens: Sequence[str],
+    type_col: Optional[int],
+    volt_src: Optional[int],
+    curr_src: Optional[int],
+    freq_src: Optional[int],
+) -> bool:
+    """Decide se uma linha pertence a uma curva I-V.
+
+    Usa a coluna ``Tipo`` quando presente; na ausência dela (ou de
+    rótulo em branco), infere pelo conteúdo: há tensão e corrente mas
+    não há frequência.
+    """
+    if type_col is not None and type_col < len(tokens):
+        text = str(tokens[type_col]).strip().lower()
+        if text:
+            return "i-v" in text or text in {"iv", "i v", "i–v"} or (
+                "curva" in text
+            )
+    v = (
+        parse_number(tokens[volt_src])
+        if volt_src is not None and volt_src < len(tokens)
+        else None
+    )
+    i = (
+        parse_number(tokens[curr_src])
+        if curr_src is not None and curr_src < len(tokens)
+        else None
+    )
+    if v is None or i is None:
+        return False
+    if freq_src is None or freq_src >= len(tokens):
+        return True
+    return parse_number(tokens[freq_src]) is None
+
+
+def load_session_iv_curves(path: str | Path) -> list["IVCurve"]:
+    """Lê as curvas I-V de um CSV de sessão do AMOSTRAS FRA.
+
+    Reconhece o formato **longo** gerado pela exportação CSV: uma
+    coluna de nome (``Medição``/``Amostra``), uma coluna ``Tipo``
+    (``EIS``/``I-V``) e colunas de tensão e corrente.  Retorna uma
+    :class:`IVCurve` por amostra que tenha linhas de tipo ``I-V``.
+
+    Arquivos que não têm coluna de nome ou de tensão/corrente (por
+    exemplo, o formato de **matriz** ou um CSV somente de FRA) retornam
+    lista vazia — cabe ao chamador tratá-los pelas rotas próprias.
+
+    Args:
+        path: Caminho do arquivo (CSV, TXT, XLSX ou ODS).
+
+    Returns:
+        Lista de curvas I-V (possivelmente vazia).
+    """
+    file_path = Path(path)
+    if file_path.suffix.lower() in {".xlsx", ".xlsm", ".ods"}:
+        # As exportações Excel usam uma planilha por curva; fora do
+        # escopo do formato longo tratado aqui.
+        return []
+    header, data = _raw_rows_and_header(file_path)
+    if header is None:
+        return []
+    name_col = _detect_name_column(header)
+    if name_col is None:
+        return []
+    column_map = map_header_to_columns(header, require_freq=False)
+    volt_src = _source_index_for(column_map, COL_VOLT)
+    curr_src = _source_index_for(column_map, COL_CURR)
+    if volt_src is None or curr_src is None:
+        return []
+    type_col = _detect_type_column(header)
+    freq_src = _source_index_for(column_map, COL_FREQ)
+
+    grouped: "dict[str, tuple[list[float], list[float]]]" = {}
+    order: list[str] = []
+    for tokens in data:
+        if not _row_is_iv(tokens, type_col, volt_src, curr_src, freq_src):
+            continue
+        v = parse_number(tokens[volt_src]) if volt_src < len(tokens) else None
+        i = parse_number(tokens[curr_src]) if curr_src < len(tokens) else None
+        if v is None or i is None:
+            continue
+        raw_name = (
+            str(tokens[name_col]).strip()
+            if name_col < len(tokens)
+            else ""
+        )
+        name = raw_name or "Amostra"
+        if name not in grouped:
+            grouped[name] = ([], [])
+            order.append(name)
+        grouped[name][0].append(v)
+        grouped[name][1].append(i)
+
+    curves: list[IVCurve] = []
+    for name in order:
+        voltage, current = grouped[name]
+        if len(voltage) < 3:
+            continue
+        try:
+            curves.append(
+                IVCurve(
+                    name=name,
+                    voltage=np.asarray(voltage),
+                    current=np.asarray(current),
+                )
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Curva I-V '%s' ignorada na importação de sessão: %s",
+                name,
+                exc,
+            )
+    if curves:
+        logger.info(
+            "Importadas %d curva(s) I-V (formato de sessão) de '%s'.",
+            len(curves),
+            file_path.name,
+        )
+    return curves
+
+
 def _split_header_and_data(
     raw: list[list[str]],
 ) -> tuple[Optional[list[str]], list[list[str]]]:
@@ -1371,9 +1513,18 @@ def load_measurements_from_file(path: str | Path) -> list[Measurement]:
         return []
 
     column_map = map_header_to_columns(header)
+    # Num CSV de sessão (com coluna ``Tipo``), as linhas de curva I-V
+    # são ignoradas aqui — elas são restauradas por
+    # :func:`load_session_iv_curves`.
+    type_col = _detect_type_column(header)
+    volt_src = _source_index_for(column_map, COL_VOLT)
+    curr_src = _source_index_for(column_map, COL_CURR)
+    freq_src = _source_index_for(column_map, COL_FREQ)
     grouped: "dict[str, list[list[Optional[float]]]]" = {}
     order: list[str] = []
     for tokens in data:
+        if _row_is_iv(tokens, type_col, volt_src, curr_src, freq_src):
+            continue
         raw_name = (
             str(tokens[name_col]).strip()
             if name_col < len(tokens)
