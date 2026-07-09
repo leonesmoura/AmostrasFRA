@@ -32,7 +32,7 @@ from matplotlib.backends.backend_qtagg import (
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QColorDialog,
     QHBoxLayout,
@@ -429,6 +429,57 @@ class PlotCanvas(QWidget):
 # ---------------------------------------------------------------------------
 # Funções de plotagem
 # ---------------------------------------------------------------------------
+def mathtext_to_pixmap(
+    expression: str,
+    fontsize: float = 20.0,
+    color: Optional[str] = None,
+    dpi: int = 220,
+) -> QPixmap:
+    """Renderiza uma expressão *mathtext* (LaTeX) do Matplotlib em pixmap.
+
+    Produz uma imagem nítida (fundo transparente) da fórmula, própria
+    para exibir num ``QLabel`` — muito mais legível que HTML com
+    subscritos.
+
+    Args:
+        expression: Expressão em sintaxe mathtext, entre ``$…$``.
+        fontsize: Tamanho da fonte (em pontos).
+        color: Cor do texto (qualquer cor Matplotlib); ``None`` usa a
+            cor de texto do tema atual.
+        dpi: Resolução de renderização (maior = mais nítido).
+
+    Returns:
+        :class:`~PySide6.QtGui.QPixmap` com a fórmula (densidade de
+        pixels ajustada para exibição em tamanho lógico correto).
+    """
+    import io
+
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    if color is None:
+        color = matplotlib.rcParams.get("text.color", "black")
+    fig = Figure(figsize=(0.1, 0.1))
+    fig.patch.set_alpha(0.0)
+    fig.text(0.0, 0.0, expression, fontsize=fontsize, color=color)
+    FigureCanvasAgg(fig)
+    buffer = io.BytesIO()
+    fig.savefig(
+        buffer,
+        format="png",
+        dpi=dpi,
+        transparent=True,
+        bbox_inches="tight",
+        pad_inches=0.06,
+    )
+    buffer.seek(0)
+    pixmap = QPixmap()
+    pixmap.loadFromData(buffer.getvalue(), "PNG")
+    # Renderizado em dpi alto; ajusta a densidade para o tamanho lógico
+    # ficar coerente e a imagem sair nítida em telas de alta resolução.
+    pixmap.setDevicePixelRatio(dpi / 100.0)
+    return pixmap
+
+
 def _attach_frequency(line: Line2D, frequency: np.ndarray) -> None:
     """Anexa o vetor de frequências à linha, para o cursor de dados."""
     line._fra_freq = np.asarray(frequency, dtype=float)  # type: ignore[attr-defined]

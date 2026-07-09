@@ -91,6 +91,7 @@ from plots import (
     plot_diode_fit,
     plot_kk,
     plot_nyquist,
+    mathtext_to_pixmap,
 )
 from util import (
     COL_CURR,
@@ -1102,10 +1103,27 @@ class IVTab(QWidget):
             "(FRA) correspondente."
         )
         associate_button.clicked.connect(self._on_associate)
-        fit_button = QPushButton("Ajustar modelo de diodo…", self)
+        fit_button = QPushButton("  Ajustar modelo de diodo…", self)
+        fit_button.setIcon(
+            self.style().standardIcon(
+                QStyle.StandardPixmap.SP_FileDialogDetailedView
+            )
+        )
         fit_button.setToolTip(
             "Estima os parâmetros do módulo (I_L, I₀, Rs, Rp, a) "
             "ajustando o modelo de diodo único à curva I-V."
+        )
+        fit_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        fit_button.setMinimumHeight(36)
+        # Botão de destaque (ação principal da aba): estilo "accent".
+        fit_button.setStyleSheet(
+            "QPushButton {"
+            " background-color: #0e639c; color: #ffffff;"
+            " font-weight: 600; border: 1px solid #1f8ad0;"
+            " border-radius: 5px; padding: 8px 16px; text-align: center; }"
+            "QPushButton:hover { background-color: #1177bb;"
+            " border-color: #3aa0e0; }"
+            "QPushButton:pressed { background-color: #0a4f7a; }"
         )
         fit_button.clicked.connect(self._on_fit_diode)
         export_button = QPushButton("Exportar Excel…", self)
@@ -1121,8 +1139,10 @@ class IVTab(QWidget):
         entry_buttons2.addWidget(update_curve_button)
         entry_buttons2.addWidget(associate_button)
         entry_buttons3 = QHBoxLayout()
-        entry_buttons3.addWidget(fit_button)
         entry_buttons3.addWidget(export_button)
+        # Linha própria em destaque para a ação principal.
+        entry_buttons_fit = QHBoxLayout()
+        entry_buttons_fit.addWidget(fit_button, 1)
 
         entry = QVBoxLayout()
         entry.addWidget(hint)
@@ -1130,6 +1150,7 @@ class IVTab(QWidget):
         entry.addLayout(entry_buttons1)
         entry.addLayout(entry_buttons2)
         entry.addLayout(entry_buttons3)
+        entry.addLayout(entry_buttons_fit)
         entry_widget = QWidget(self)
         entry_widget.setLayout(entry)
         entry_widget.setMaximumWidth(460)
@@ -1642,19 +1663,19 @@ class DiodeFitDialog(QDialog):
         hint.setStyleSheet("color: #9a9a9a;")
 
         equation = QLabel(self)
-        equation.setTextFormat(Qt.TextFormat.RichText)
-        equation.setText(
-            "<div style='font-size:18px; line-height:1.6;'>"
-            "I = I<sub>L</sub> &minus; I<sub>0</sub>&middot;"
-            "[ exp( (V + I&middot;R<sub>s</sub>) / a ) &minus; 1 ] "
-            "&minus; (V + I&middot;R<sub>s</sub>) / R<sub>p</sub>"
-            "</div>"
-        )
-        equation.setWordWrap(True)
         equation.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        equation.setPixmap(
+            mathtext_to_pixmap(
+                r"$I = I_\mathrm{L} - I_0\left[\exp\!\left("
+                r"\frac{V + I\,R_\mathrm{s}}{a}\right) - 1\right]"
+                r" - \frac{V + I\,R_\mathrm{s}}{R_\mathrm{p}}$",
+                fontsize=17,
+                color="#e8e8e8",
+            )
+        )
+        equation.setScaledContents(False)
         equation.setStyleSheet(
-            "QLabel { color: #e8e8e8;"
-            " background: rgba(255, 255, 255, 0.06);"
+            "QLabel { background: rgba(255, 255, 255, 0.06);"
             " border: 1px solid #5a6472; border-radius: 6px;"
             " padding: 10px; margin: 2px 0; }"
         )
