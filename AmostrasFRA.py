@@ -38,6 +38,23 @@ def main() -> int:
     util.configure_logging(logging.INFO)
     logger.info("Iniciando %s (versão %s).", util.APP_NAME, util.APP_VERSION)
 
+    # No Windows, a barra de tarefas escolhe o ícone pelo AppUserModelID
+    # do processo. Sem um ID próprio, ela usaria o ícone do python.exe
+    # (genérico) em vez do ícone da janela. Definir um ID explícito faz
+    # a barra de tarefas exibir o ícone do aplicativo.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                f"AmostrasFRA.EIS.{util.APP_VERSION}"
+            )
+        except Exception:  # pragma: no cover - específico do Windows
+            logger.debug(
+                "Não foi possível definir o AppUserModelID.",
+                exc_info=True,
+            )
+
     app = QApplication(sys.argv)
     app.setApplicationName(util.APP_NAME)
     app.setApplicationVersion(util.APP_VERSION)
