@@ -13,3 +13,5 @@ impedance>=1.7
 
 # Empacotamento (opcional, apenas para gerar o executável):
 pyinstaller>=6.0
+# Geração do ícone .ico a partir do SVG (assets/gerar_icone.py):
+Pillow>=10.0

@@ -223,14 +223,27 @@ python AmostrasFRA.py
 
 ```console
 pip install pyinstaller
-pyinstaller --noconfirm --windowed --name AmostrasFRA AmostrasFRA.py
+pyinstaller --noconfirm --windowed --name AmostrasFRA --icon assets/icone.ico --add-data "assets;assets" AmostrasFRA.py
 ```
 
 O executável é gerado em `dist/AmostrasFRA/`. Para um único arquivo:
 
 ```console
-pyinstaller --noconfirm --windowed --onefile --name AmostrasFRA AmostrasFRA.py
+pyinstaller --noconfirm --windowed --onefile --name AmostrasFRA --icon assets/icone.ico --add-data "assets;assets" AmostrasFRA.py
 ```
+
+> No Linux/macOS troque o separador do `--add-data` de `;` por `:`
+> (`"assets:assets"`).
+
+## Ícone
+
+O ícone do programa é um **elefante cuja tromba forma a curva de
+Nyquist** — uma piscadela para a frase de von Neumann tão citada em EIS,
+*"com quatro parâmetros ajusto um elefante e com cinco faço-o mexer a
+tromba"* — apropriada para um software que **ajusta o módulo com cinco
+parâmetros** (modelo de diodo I_L, I₀, Rs, Rp, a) e o circuito
+equivalente do FRA. O vetor está em `assets/icone.svg`; regenere os
+`.png`/`.ico` com `python assets/gerar_icone.py`.
 
 ## Notas técnicas
 

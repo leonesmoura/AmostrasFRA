@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import util
@@ -41,6 +42,10 @@ def main() -> int:
     app.setApplicationName(util.APP_NAME)
     app.setApplicationVersion(util.APP_VERSION)
     app.setOrganizationName("AmostrasFRA")
+
+    icon_file = util.icon_path()
+    if icon_file is not None:
+        app.setWindowIcon(QIcon(str(icon_file)))
 
     try:
         # Importações tardias: o tema do Matplotlib e a janela principal

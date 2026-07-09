@@ -27,6 +27,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QIcon,
     QKeySequence,
     QPainter,
     QPalette,
@@ -1696,10 +1697,11 @@ class DiodeFitDialog(QDialog):
 
         self.cells_spin = QSpinBox(self)
         self.cells_spin.setRange(1, 1000)
-        self.cells_spin.setValue(60)
+        self.cells_spin.setValue(36)
         self.cells_spin.setToolTip(
-            "Número de células em série (Ns) do módulo, usado para "
-            "derivar o fator de idealidade n a partir de a."
+            "Número de células em série (Ns) do módulo. Apenas "
+            "informativo: serve só para derivar o fator de idealidade "
+            "n a partir de a — não afeta o ajuste."
         )
         self.temp_spin = QDoubleSpinBox(self)
         self.temp_spin.setRange(-40.0, 150.0)
@@ -3964,6 +3966,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{util.APP_NAME}")
+        icon_file = util.icon_path()
+        if icon_file is not None:
+            self.setWindowIcon(QIcon(str(icon_file)))
         self.resize(1360, 840)
 
         #: Medições ativas, indexadas por nome (ordem de inserção).

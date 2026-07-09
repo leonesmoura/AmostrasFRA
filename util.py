@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,31 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def resource_path(relative: str) -> Path:
+    """Caminho de um recurso empacotado (funciona também no PyInstaller).
+
+    No executável congelado os dados ficam em ``sys._MEIPASS``; em
+    desenvolvimento, ao lado deste módulo.
+
+    Args:
+        relative: Caminho relativo do recurso (ex.: ``"assets/icone.ico"``).
+
+    Returns:
+        Caminho absoluto do recurso.
+    """
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / relative
+
+
+def icon_path() -> Optional[Path]:
+    """Caminho do ícone da aplicação (``.ico``), ou ``None`` se ausente."""
+    for name in ("assets/icone.ico", "assets/icone.png", "assets/icone.svg"):
+        candidate = resource_path(name)
+        if candidate.exists():
+            return candidate
+    return None
 
 APP_NAME: str = "AMOSTRAS FRA 2.0"
 APP_VERSION: str = "2.0.0"
