@@ -75,6 +75,7 @@ import circuitos
 import exportacao
 import iv_model
 import kk as kk_module
+import projeto
 import serial_io
 import util
 from correcao import InstrumentCorrection
@@ -4282,6 +4283,28 @@ class MainWindow(QMainWindow):
         self.action_export_csv = QAction("Exportar CSV…", self)
         self.action_export_csv.triggered.connect(self._export_csv)
 
+        self.action_save_project = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton),
+            "Salvar projeto…",
+            self,
+        )
+        self.action_save_project.setShortcut(QKeySequence.StandardKey.Save)
+        self.action_save_project.setToolTip(
+            "Salva a sessão inteira (FRA, I-V, correções, ajustes de "
+            "circuito e de diodo, cores e marcações) em um arquivo .fra."
+        )
+        self.action_save_project.triggered.connect(self._save_project)
+
+        self.action_open_project = QAction(
+            style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon),
+            "Abrir projeto…",
+            self,
+        )
+        self.action_open_project.setToolTip(
+            "Abre um projeto .fra, restaurando toda a sessão salva."
+        )
+        self.action_open_project.triggered.connect(self._open_project)
+
         self.action_export_image = QAction(
             "Exportar imagem do gráfico atual…", self
         )
@@ -4376,6 +4399,9 @@ class MainWindow(QMainWindow):
 
         # -- Menus ---------------------------------------------------------
         menu_file = self.menuBar().addMenu("&Arquivo")
+        menu_file.addAction(self.action_open_project)
+        menu_file.addAction(self.action_save_project)
+        menu_file.addSeparator()
         menu_file.addAction(self.action_import)
         export_menu = menu_file.addMenu("Exportar")
         export_menu.addAction(self.action_export_excel)
@@ -4447,6 +4473,9 @@ class MainWindow(QMainWindow):
         toolbar.setToolButtonStyle(
             Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
+        toolbar.addAction(self.action_open_project)
+        toolbar.addAction(self.action_save_project)
+        toolbar.addSeparator()
         toolbar.addAction(self.action_import)
         toolbar.addAction(self.action_add_measurement)
         toolbar.addSeparator()
@@ -5249,6 +5278,139 @@ class MainWindow(QMainWindow):
             f"CSV exportado: {path} "
             f"({len(measurements)} FRA, {len(iv_curves)} I-V)."
         )
+
+    # -- Projeto (sessão completa) ---------------------------------------
+    def _collect_project_data(self) -> "projeto.ProjectData":
+        """Reúne o estado atual da sessão para salvar em projeto."""
+        checked = [
+            self.measurement_list.item(i).text()
+            for i in range(self.measurement_list.count())
+            if self.measurement_list.item(i).checkState()
+            == Qt.CheckState.Checked
+        ]
+        return projeto.ProjectData(
+            samples=self.sample_names(),
+            checked=checked,
+            measurements=dict(self.measurements),
+            iv_curves=dict(self.iv_curves),
+            curve_colors=dict(self.curve_colors),
+            corrections=dict(self.corrections),
+            fit_results=dict(self.fit_results),
+            iv_fit_results=dict(self.iv_fit_results),
+            kk_results=dict(self.kk_results),
+        )
+
+    def _save_project(self) -> None:
+        """Salva a sessão inteira em um arquivo de projeto (.fra)."""
+        if not self.measurements and not self.iv_curves:
+            QMessageBox.information(
+                self,
+                "Salvar projeto",
+                "Não há nada para salvar. Adicione medições ou curvas "
+                "I-V primeiro.",
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salvar projeto",
+            f"projeto{projeto.PROJECT_SUFFIX}",
+            f"Projeto AMOSTRAS FRA (*{projeto.PROJECT_SUFFIX})",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(projeto.PROJECT_SUFFIX):
+            path += projeto.PROJECT_SUFFIX
+        try:
+            projeto.save_project(path, self._collect_project_data())
+        except (OSError, ValueError) as exc:
+            logger.exception("Falha ao salvar projeto.")
+            QMessageBox.critical(
+                self,
+                "Salvar projeto",
+                f"Não foi possível salvar:\n{exc}",
+            )
+            return
+        self.show_status(f"Projeto salvo: {path}")
+
+    def _open_project(self) -> None:
+        """Abre um projeto (.fra), restaurando a sessão completa."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Abrir projeto",
+            "",
+            f"Projeto AMOSTRAS FRA (*{projeto.PROJECT_SUFFIX});;"
+            "Todos os arquivos (*)",
+        )
+        if not path:
+            return
+        try:
+            data = projeto.load_project(path)
+        except (OSError, ValueError) as exc:
+            logger.exception("Falha ao abrir projeto.")
+            QMessageBox.critical(
+                self,
+                "Abrir projeto",
+                f"Não foi possível abrir:\n{exc}",
+            )
+            return
+        if self.measurements or self.iv_curves:
+            answer = QMessageBox.question(
+                self,
+                "Abrir projeto",
+                "Abrir o projeto substitui a sessão atual — medições, "
+                "curvas e ajustes não salvos serão perdidos. Continuar?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._apply_project_data(data)
+        self.show_status(
+            f"Projeto aberto: {path} "
+            f"({len(data.measurements)} FRA, {len(data.iv_curves)} I-V)."
+        )
+
+    def _reset_session(self) -> None:
+        """Limpa toda a sessão (dados, listas e resultados)."""
+        self.measurements.clear()
+        self.iv_curves.clear()
+        self.corrections.clear()
+        self.fit_results.clear()
+        self.iv_fit_results.clear()
+        self.kk_results.clear()
+        self.curve_colors.clear()
+        self.measurement_list.blockSignals(True)
+        try:
+            self.measurement_list.clear()
+        finally:
+            self.measurement_list.blockSignals(False)
+
+    def _apply_project_data(self, data: "projeto.ProjectData") -> None:
+        """Substitui a sessão atual pelo conteúdo de um projeto."""
+        self._reset_session()
+        self.measurements.update(data.measurements)
+        self.iv_curves.update(data.iv_curves)
+        self.corrections.update(data.corrections)
+        self.fit_results.update(data.fit_results)
+        self.iv_fit_results.update(data.iv_fit_results)
+        self.kk_results.update(data.kk_results)
+        self.curve_colors.update(data.curve_colors)
+
+        ordered = list(data.samples)
+        for name in list(data.measurements) + list(data.iv_curves):
+            if name not in ordered:
+                ordered.append(name)
+        checked = set(data.checked)
+        for name in ordered:
+            self._ensure_sample_item(name, checked=name in checked)
+            self.update_sample_tooltip(name)
+
+        self._apply_list_item_colors()
+        self._sync_measurement_widgets()
+        self.data_panel.refresh_corrections()
+        self.refresh_plots()
+        self.iv_tab.refresh()
 
     def _current_canvas(self) -> Optional[PlotCanvas]:
         """Canvas da aba atualmente visível (ou None)."""

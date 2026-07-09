@@ -10,6 +10,16 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
 
 ## Recursos
 
+- **Projeto / sessão completa** (`Arquivo → Salvar projeto…` e
+  `Abrir projeto…`, também na barra de ferramentas): grava **tudo** da
+  sessão em um arquivo `.fra` (JSON) e restaura exatamente como estava —
+  medições FRA (inclusive a marca de **corrigido** e as observações), as
+  curvas I-V, a **biblioteca de correções do instrumento**, os
+  **ajustes de circuito equivalente** e de **modelo de diodo**, as
+  validações de **Kramers-Kronig**, as **cores**, a ordem e a marcação
+  das amostras. Diferente do CSV (dados tabulares para Excel), o projeto
+  preserva os metadados — use-o para não perder o estado do trabalho.
+
 - **Entrada de dados tipo Excel** diretamente na interface (QTableWidget):
   - Digitação manual;
   - Colagem com **Ctrl+V** a partir do Excel, do Metrohm NOVA ou de
@@ -213,6 +223,7 @@ python AmostrasFRA.py
 | `correcao.py`     | Correção do instrumento (resistor padrão, `H(f)`)    |
 | `circuitos.py`    | Modelos e ajuste de circuitos equivalentes           |
 | `iv_model.py`     | Ajuste do modelo de diodo único da curva I-V         |
+| `projeto.py`      | Salvar/abrir projeto `.fra` (sessão completa em JSON)|
 | `exportacao.py`   | Exportação de imagens, Excel, CSV e relatório PDF    |
 | `graficos.py`     | Criador de gráficos com zoom de destaque (inset)     |
 | `serial_io.py`    | Conexão serial (QtSerialPort) e parsing dos pontos   |
