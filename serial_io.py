@@ -303,7 +303,9 @@ class SerialAcquisition(QObject):
         self._port.setParity(QSerialPort.Parity.NoParity)
         self._port.setStopBits(QSerialPort.StopBits.OneStop)
         self._port.setFlowControl(QSerialPort.FlowControl.NoFlowControl)
-        if not self._port.open(QSerialPort.OpenModeFlag.ReadOnly):
+        # ReadWrite: além de receber dados, permite enviar comandos ao
+        # embarcado (ex.: configuração e disparo de varredura do AD5933).
+        if not self._port.open(QSerialPort.OpenModeFlag.ReadWrite):
             message = self._port.errorString() or "erro desconhecido"
             raise RuntimeError(
                 f"Não foi possível abrir a porta {port_name}: {message}."

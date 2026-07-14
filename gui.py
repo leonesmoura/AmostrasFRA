@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -2449,10 +2450,27 @@ class SerialDialog(QDialog):
     )
     _MAX_LOG_LINES: int = 500
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    #: Faixas de excitação do AD5933: (rótulo, Vpp em mV p/ firmware).
+    _AD5933_RANGES: tuple[tuple[str, int], ...] = (
+        ("2 Vpp (offset 1,48 V)", 2000),
+        ("1 Vpp (offset 0,76 V)", 1000),
+        ("0,4 Vpp (offset 0,31 V)", 400),
+        ("0,2 Vpp (offset 0,17 V)", 200),
+    )
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        mode: str = "generico",
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Conexão Serial — dados do embarcado")
-        self.resize(920, 640)
+        #: Tipo de dispositivo: "generico" (COM comum) ou "ad5933".
+        self.mode = mode
+        if mode == "ad5933":
+            self.setWindowTitle("Conexão Serial — AD5933 (via ESP32)")
+        else:
+            self.setWindowTitle("Conexão Serial — dispositivo genérico")
+        self.resize(920, 700)
         self.setWindowFlag(Qt.WindowType.Window, True)
 
         self._acq = serial_io.SerialAcquisition(self)
@@ -2525,17 +2543,90 @@ class SerialDialog(QDialog):
         self.clear_button = QPushButton("Limpar pontos", self)
         self.clear_button.clicked.connect(self._on_clear)
 
-        hint = QLabel(
-            "Envie do embarcado uma linha por ponto (uma frequência por "
-            "linha), terminada por \"\\n\". Dois formatos são aceitos:\n"
-            "• Posicional (use o seletor abaixo): 10000,10.2,0.00012,-80.2\n"
-            "• Rotulado (ordem livre): f=10000 V=10,2 I=0,00012 pha=-80,2\n"
-            "Separadores vírgula/;/tab/espaço e vírgula decimal são "
-            "reconhecidos; um marcador inicial (#, $, >) é ignorado.",
-            self,
-        )
+        if self.mode == "ad5933":
+            hint = QLabel(
+                "Configure a varredura abaixo e clique em \"Enviar "
+                "configuração\" com a porta conectada; depois use "
+                "\"Iniciar varredura\". O firmware do ESP32 responde no "
+                "formato rotulado f= z'= z''= (uma linha por ponto).",
+                self,
+            )
+        else:
+            hint = QLabel(
+                "Envie do embarcado uma linha por ponto (uma frequência "
+                "por linha), terminada por \"\\n\". Dois formatos são "
+                "aceitos:\n"
+                "• Posicional (use o seletor abaixo): "
+                "10000,10.2,0.00012,-80.2\n"
+                "• Rotulado (ordem livre): f=10000 V=10,2 I=0,00012 "
+                "pha=-80,2\n"
+                "Separadores vírgula/;/tab/espaço e vírgula decimal são "
+                "reconhecidos; um marcador inicial (#, $, >) é ignorado.",
+                self,
+            )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #9a9a9a;")
+
+        # -- Configuração da varredura (modo AD5933) -----------------------
+        self.ad5933_group: Optional[QGroupBox] = None
+        if self.mode == "ad5933":
+            self.ad5933_group = QGroupBox(
+                "Configuração da varredura (AD5933)", self
+            )
+            self.ad_fstart = QDoubleSpinBox(self)
+            self.ad_fstart.setRange(1.0, 200000.0)
+            self.ad_fstart.setDecimals(1)
+            self.ad_fstart.setValue(1000.0)
+            self.ad_fstart.setSuffix(" Hz")
+            self.ad_fstop = QDoubleSpinBox(self)
+            self.ad_fstop.setRange(1.0, 200000.0)
+            self.ad_fstop.setDecimals(1)
+            self.ad_fstop.setValue(100000.0)
+            self.ad_fstop.setSuffix(" Hz")
+            self.ad_npts = QSpinBox(self)
+            self.ad_npts.setRange(2, 512)
+            self.ad_npts.setValue(100)
+            self.ad_range_combo = QComboBox(self)
+            for label, millivolt in self._AD5933_RANGES:
+                self.ad_range_combo.addItem(label, millivolt)
+            self.ad_range_combo.setCurrentIndex(1)  # 1 Vpp
+            self.ad_pga_combo = QComboBox(self)
+            self.ad_pga_combo.addItem("x1", 1)
+            self.ad_pga_combo.addItem("x5", 5)
+            self.ad_settle = QSpinBox(self)
+            self.ad_settle.setRange(1, 511)
+            self.ad_settle.setValue(100)
+            self.ad_settle.setToolTip(
+                "Ciclos de acomodação do DUT antes de cada DFT."
+            )
+
+            self.ad_config_button = QPushButton(
+                "Enviar configuração", self
+            )
+            self.ad_config_button.clicked.connect(self._send_ad5933_config)
+            self.ad_sweep_button = QPushButton(
+                "Iniciar varredura", self
+            )
+            self.ad_sweep_button.clicked.connect(self._start_ad5933_sweep)
+            self.ad_temp_button = QPushButton("Ler temperatura", self)
+            self.ad_temp_button.clicked.connect(self._read_ad5933_temp)
+
+            grid = QGridLayout(self.ad5933_group)
+            grid.addWidget(QLabel("Freq. inicial:", self), 0, 0)
+            grid.addWidget(self.ad_fstart, 0, 1)
+            grid.addWidget(QLabel("Freq. final:", self), 0, 2)
+            grid.addWidget(self.ad_fstop, 0, 3)
+            grid.addWidget(QLabel("Nº de pontos:", self), 0, 4)
+            grid.addWidget(self.ad_npts, 0, 5)
+            grid.addWidget(QLabel("Excitação:", self), 1, 0)
+            grid.addWidget(self.ad_range_combo, 1, 1)
+            grid.addWidget(QLabel("Ganho PGA:", self), 1, 2)
+            grid.addWidget(self.ad_pga_combo, 1, 3)
+            grid.addWidget(QLabel("Acomodação:", self), 1, 4)
+            grid.addWidget(self.ad_settle, 1, 5)
+            grid.addWidget(self.ad_config_button, 2, 1)
+            grid.addWidget(self.ad_sweep_button, 2, 3)
+            grid.addWidget(self.ad_temp_button, 2, 5)
 
         # -- Layout -------------------------------------------------------
         conn_row = QHBoxLayout()
@@ -2567,7 +2658,15 @@ class SerialDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(hint)
         layout.addLayout(conn_row)
-        layout.addLayout(format_row)
+        if self.mode == "ad5933":
+            # Formato fixo (rotulado f= z'= z''=); o seletor não se aplica.
+            self.format_combo.setCurrentIndex(1)  # Freq, Z', -Z''
+            self.format_combo.setVisible(False)
+            format_row.itemAt(0).widget().setVisible(False)
+            layout.addLayout(format_row)
+            layout.addWidget(self.ad5933_group)
+        else:
+            layout.addLayout(format_row)
         layout.addWidget(QLabel("Pontos recebidos:", self))
         layout.addWidget(self.preview_table, 1)
         layout.addWidget(QLabel("Log da porta serial:", self))
@@ -2582,6 +2681,65 @@ class SerialDialog(QDialog):
     def _on_format_changed(self, _index: int) -> None:
         """Atualiza o mapeamento posicional do parser."""
         self._acq.set_mapping(self.format_combo.currentData())
+
+    # -- Comandos ao AD5933 (via firmware do ESP32) ---------------------------
+    def _require_connection(self) -> bool:
+        """Garante que a porta esteja aberta antes de enviar comandos."""
+        if not self._acq.is_open:
+            QMessageBox.information(
+                self,
+                "Conexão Serial",
+                "Conecte-se à porta serial antes de enviar comandos "
+                "ao AD5933.",
+            )
+            return False
+        return True
+
+    def _send_ad5933_config(self) -> None:
+        """Envia a configuração de varredura ao firmware (comando C)."""
+        if not self._require_connection():
+            return
+        f0 = float(self.ad_fstart.value())
+        f1 = float(self.ad_fstop.value())
+        if f1 <= f0:
+            QMessageBox.warning(
+                self,
+                "Configuração AD5933",
+                "A frequência final deve ser maior que a inicial.",
+            )
+            return
+        n = int(self.ad_npts.value())
+        df = (f1 - f0) / (n - 1)
+        command = (
+            f"C f0={f0:.3f} df={df:.6f} n={n} "
+            f"vpp={self.ad_range_combo.currentData()} "
+            f"pga={self.ad_pga_combo.currentData()} "
+            f"st={self.ad_settle.value()}"
+        )
+        self._acq.send_text(command)
+        self.status_label.setText(
+            f"Configuração enviada: {f0:.1f}–{f1:.1f} Hz, {n} pontos, "
+            f"{self.ad_range_combo.currentText()}, "
+            f"PGA {self.ad_pga_combo.currentText()}."
+        )
+
+    def _start_ad5933_sweep(self) -> None:
+        """Dispara a varredura no firmware (comando S)."""
+        if not self._require_connection():
+            return
+        self._acq.send_text("S")
+        self.status_label.setText(
+            "Varredura iniciada — aguardando pontos do AD5933…"
+        )
+
+    def _read_ad5933_temp(self) -> None:
+        """Solicita a temperatura interna do AD5933 (comando T)."""
+        if not self._require_connection():
+            return
+        self._acq.send_text("T")
+        self.status_label.setText(
+            "Temperatura solicitada — veja o log da porta serial."
+        )
 
     # -- Conexão ------------------------------------------------------------
     def refresh_ports(self) -> None:
@@ -5525,9 +5683,36 @@ class MainWindow(QMainWindow):
 
     # -- Conexão serial --------------------------------------------------------
     def _open_serial_dialog(self) -> None:
-        """Abre (ou traz à frente) a janela de conexão serial."""
+        """Pergunta o tipo de dispositivo e abre a janela serial."""
+        options = (
+            "Dispositivo genérico (porta COM)",
+            "AD5933 — analisador de impedância (via ESP32)",
+        )
+        current = 1 if (
+            self._serial_dialog is not None
+            and self._serial_dialog.mode == "ad5933"
+        ) else 0
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Conexão Serial",
+            "Qual dispositivo será conectado?",
+            list(options),
+            current,
+            False,
+        )
+        if not ok:
+            return
+        mode = "ad5933" if choice == options[1] else "generico"
+        # Recria a janela se o tipo de dispositivo mudou.
+        if (
+            self._serial_dialog is not None
+            and self._serial_dialog.mode != mode
+        ):
+            self._serial_dialog.close()
+            self._serial_dialog.deleteLater()
+            self._serial_dialog = None
         if self._serial_dialog is None:
-            self._serial_dialog = SerialDialog(self)
+            self._serial_dialog = SerialDialog(self, mode=mode)
             self._serial_dialog.measurementCreated.connect(
                 self.add_measurement
             )
