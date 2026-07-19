@@ -2555,15 +2555,27 @@ class SerialDialog(QDialog):
             )
         else:
             hint = QLabel(
-                "Envie do embarcado uma linha por ponto (uma frequência "
-                "por linha), terminada por \"\\n\". Dois formatos são "
-                "aceitos:\n"
-                "• Posicional (use o seletor abaixo): "
-                "10000,10.2,0.00012,-80.2\n"
-                "• Rotulado (ordem livre): f=10000 V=10,2 I=0,00012 "
-                "pha=-80,2\n"
+                "<b>Como enviar os dados</b> — uma linha por ponto (uma "
+                "frequência por linha), terminada por <code>\\n</code>. "
+                "Dois formatos são aceitos:<br>"
+                "• <b>Rotulado</b> (recomendado; ordem livre, o seletor "
+                "de formato é ignorado): "
+                "<code>F=100; V=10; I=0,0001; pha=-45,3;</code> ou "
+                "<code>f=1000 z'=998 z''=-12</code>. Rótulos aceitos: "
+                "f/freq, V/tensao, I/corrente, pha/fase, |z|/zmod, "
+                "z'/zre, z''/zim (sem distinção de maiúsculas; "
+                "<code>=</code> ou <code>:</code>).<br>"
+                "• <b>Posicional</b> (só números; a ordem é a do seletor "
+                "\"Formato dos dados\" abaixo): "
+                "<code>10000,10.2,0.00012,-80.2</code><br>"
                 "Separadores vírgula/;/tab/espaço e vírgula decimal são "
-                "reconhecidos; um marcador inicial (#, $, >) é ignorado.",
+                "reconhecidos; um marcador inicial (#, $, &gt;) é "
+                "ignorado — use-o nas mensagens de log do firmware.<br>"
+                "<b>Importante:</b> enviando só F, V e I o programa "
+                "calcula |Z| = V/I, mas sem a <b>fase</b> não há "
+                "Z'/−Z'' — o Nyquist fica vazio. Envie também "
+                "<code>pha=</code> (ou <code>z'=</code> e "
+                "<code>z''=</code>) para o ponto completo.",
                 self,
             )
         hint.setWordWrap(True)
