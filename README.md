@@ -228,6 +228,7 @@ python AmostrasFRA.py
 | `graficos.py`     | Criador de gráficos com zoom de destaque (inset)     |
 | `serial_io.py`    | Conexão serial (QtSerialPort) e parsing dos pontos   |
 | `simulacao.py`    | Simulação animada do módulo FV (camadas e elétrons)  |
+| `ajuda.py`        | Guia do usuário (F1) com tópicos e capturas de tela  |
 | `util.py`         | Medições, parsing de dados, importação e logging     |
 
 ## Compilação com PyInstaller

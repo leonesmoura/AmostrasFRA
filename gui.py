@@ -72,6 +72,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+import ajuda
 import circuitos
 import exportacao
 import iv_model
@@ -2651,9 +2652,11 @@ class SerialDialog(QDialog):
             QDialogButtonBox.StandardButton.Close, self
         )
         button_box.rejected.connect(self.close)
-        button_box.button(
+        close_button = button_box.button(
             QDialogButtonBox.StandardButton.Close
-        ).clicked.connect(self.close)
+        )
+        close_button.setText("Fechar")
+        close_button.clicked.connect(self.close)
 
         layout = QVBoxLayout(self)
         layout.addWidget(hint)
@@ -4552,6 +4555,15 @@ class MainWindow(QMainWindow):
             self._open_chart_builder
         )
 
+        self.action_help = QAction("Guia do usuário", self)
+        self.action_help.setShortcut(
+            QKeySequence(QKeySequence.StandardKey.HelpContents)
+        )
+        self.action_help.setToolTip(
+            "Abre o guia completo do programa (F1)."
+        )
+        self.action_help.triggered.connect(self._open_help)
+
         self.action_about = QAction("Sobre…", self)
         self.action_about.triggered.connect(self._show_about)
 
@@ -4622,6 +4634,8 @@ class MainWindow(QMainWindow):
         menu_view.addAction(self.options_dock.toggleViewAction())
 
         menu_help = self.menuBar().addMenu("A&juda")
+        menu_help.addAction(self.action_help)
+        menu_help.addSeparator()
         menu_help.addAction(self.action_about)
 
         # -- Toolbar ---------------------------------------------------------
@@ -5736,6 +5750,14 @@ class MainWindow(QMainWindow):
         )
 
     # -- Ajuda -----------------------------------------------------------------
+    def _open_help(self) -> None:
+        """Abre (ou traz à frente) o Guia do usuário (F1)."""
+        if getattr(self, "_help_dialog", None) is None:
+            self._help_dialog = ajuda.HelpDialog(self)
+        self._help_dialog.show()
+        self._help_dialog.raise_()
+        self._help_dialog.activateWindow()
+
     def _show_about(self) -> None:
         """Exibe a janela "Sobre"."""
         QMessageBox.about(

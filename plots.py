@@ -898,8 +898,8 @@ def plot_circuit_fit(
         fontsize=7.5,
         bbox={
             "boxstyle": "round,pad=0.4",
-            "fc": matplotlib.rcParams["legend.facecolor"],
-            "ec": matplotlib.rcParams["legend.edgecolor"],
+            "fc": _legend_color("legend.facecolor", ax_ny),
+            "ec": _legend_color("legend.edgecolor", ax_ny),
             "alpha": 0.9,
         },
     )
@@ -908,6 +908,28 @@ def plot_circuit_fit(
         f"({fit.circuit_string})",
         fontsize=11,
     )
+
+
+def _legend_color(rc_key: str, ax) -> object:
+    """Cor de legenda dos rcParams, resolvendo o valor ``"inherit"``.
+
+    O padrão do matplotlib para ``legend.facecolor``/``edgecolor`` é a
+    string ``"inherit"``, que um ``bbox`` de ``Axes.text`` não aceita.
+
+    Args:
+        rc_key: Chave do rcParams (``"legend.facecolor"`` ou
+            ``"legend.edgecolor"``).
+        ax: Eixos de onde herdar a cor quando necessário.
+
+    Returns:
+        Uma cor válida para o matplotlib.
+    """
+    value = matplotlib.rcParams[rc_key]
+    if value != "inherit":
+        return value
+    if rc_key == "legend.facecolor":
+        return ax.get_facecolor()
+    return matplotlib.rcParams["axes.edgecolor"]
 
 
 #: Nomes e unidades dos parâmetros do modelo de diodo (para rótulos).
@@ -982,8 +1004,8 @@ def plot_diode_fit(
         fontsize=7.5,
         bbox={
             "boxstyle": "round,pad=0.4",
-            "fc": matplotlib.rcParams["legend.facecolor"],
-            "ec": matplotlib.rcParams["legend.edgecolor"],
+            "fc": _legend_color("legend.facecolor", ax),
+            "ec": _legend_color("legend.edgecolor", ax),
             "alpha": 0.9,
         },
     )
