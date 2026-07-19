@@ -24,6 +24,7 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtSerialPort import QSerialPort
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -2568,6 +2569,64 @@ class SerialDialog(QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #9a9a9a;")
 
+        # -- Configuração da comunicação (modo genérico) -------------------
+        self.serial_group: Optional[QGroupBox] = None
+        if self.mode == "generico":
+            self.serial_group = QGroupBox(
+                "Configuração da comunicação", self
+            )
+            self.databits_combo = QComboBox(self)
+            for bits, value in (
+                ("8", QSerialPort.DataBits.Data8),
+                ("7", QSerialPort.DataBits.Data7),
+                ("6", QSerialPort.DataBits.Data6),
+                ("5", QSerialPort.DataBits.Data5),
+            ):
+                self.databits_combo.addItem(bits, value)
+            self.parity_combo = QComboBox(self)
+            for label, value in (
+                ("Nenhuma", QSerialPort.Parity.NoParity),
+                ("Par", QSerialPort.Parity.EvenParity),
+                ("Ímpar", QSerialPort.Parity.OddParity),
+            ):
+                self.parity_combo.addItem(label, value)
+            self.stopbits_combo = QComboBox(self)
+            for label, value in (
+                ("1", QSerialPort.StopBits.OneStop),
+                ("1,5", QSerialPort.StopBits.OneAndHalfStop),
+                ("2", QSerialPort.StopBits.TwoStop),
+            ):
+                self.stopbits_combo.addItem(label, value)
+            self.flow_combo = QComboBox(self)
+            for label, value in (
+                ("Nenhum", QSerialPort.FlowControl.NoFlowControl),
+                ("RTS/CTS (hardware)",
+                 QSerialPort.FlowControl.HardwareControl),
+                ("XON/XOFF (software)",
+                 QSerialPort.FlowControl.SoftwareControl),
+            ):
+                self.flow_combo.addItem(label, value)
+
+            serial_grid = QGridLayout(self.serial_group)
+            serial_grid.addWidget(QLabel("Bits de dados:", self), 0, 0)
+            serial_grid.addWidget(self.databits_combo, 0, 1)
+            serial_grid.addWidget(QLabel("Paridade:", self), 0, 2)
+            serial_grid.addWidget(self.parity_combo, 0, 3)
+            serial_grid.addWidget(QLabel("Bits de parada:", self), 0, 4)
+            serial_grid.addWidget(self.stopbits_combo, 0, 5)
+            serial_grid.addWidget(
+                QLabel("Controle de fluxo:", self), 1, 0
+            )
+            serial_grid.addWidget(self.flow_combo, 1, 1)
+            note = QLabel(
+                "Padrão 8N1 sem controle de fluxo — o usado por "
+                "Arduino/ESP32 e pela maioria dos conversores USB-serial.",
+                self,
+            )
+            note.setStyleSheet("color: #9a9a9a;")
+            note.setWordWrap(True)
+            serial_grid.addWidget(note, 1, 2, 1, 4)
+
         # -- Configuração da varredura (modo AD5933) -----------------------
         self.ad5933_group: Optional[QGroupBox] = None
         if self.mode == "ad5933":
@@ -2669,6 +2728,7 @@ class SerialDialog(QDialog):
             layout.addLayout(format_row)
             layout.addWidget(self.ad5933_group)
         else:
+            layout.addWidget(self.serial_group)
             layout.addLayout(format_row)
         layout.addWidget(QLabel("Pontos recebidos:", self))
         layout.addWidget(self.preview_table, 1)
@@ -2783,7 +2843,17 @@ class SerialDialog(QDialog):
                 )
                 return
             try:
-                self._acq.open(port, self._selected_baud())
+                if self.serial_group is not None:
+                    self._acq.open(
+                        port,
+                        self._selected_baud(),
+                        data_bits=self.databits_combo.currentData(),
+                        parity=self.parity_combo.currentData(),
+                        stop_bits=self.stopbits_combo.currentData(),
+                        flow_control=self.flow_combo.currentData(),
+                    )
+                else:
+                    self._acq.open(port, self._selected_baud())
             except RuntimeError as exc:
                 self.connect_button.setChecked(False)
                 QMessageBox.critical(
@@ -2798,6 +2868,8 @@ class SerialDialog(QDialog):
         self.port_combo.setEnabled(False)
         self.baud_combo.setEnabled(False)
         self.refresh_button.setEnabled(False)
+        if self.serial_group is not None:
+            self.serial_group.setEnabled(False)
         self.status_label.setText(
             f"Conectado a {self._acq.port_name} "
             f"({self._selected_baud()} baud). Aguardando dados…"
@@ -2809,6 +2881,8 @@ class SerialDialog(QDialog):
         self.port_combo.setEnabled(True)
         self.baud_combo.setEnabled(True)
         self.refresh_button.setEnabled(True)
+        if self.serial_group is not None:
+            self.serial_group.setEnabled(True)
         self.status_label.setText(
             f"Desconectado. {len(self._rows)} ponto(s) recebido(s)."
         )

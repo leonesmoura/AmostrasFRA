@@ -283,12 +283,26 @@ class SerialAcquisition(QObject):
         """Nome da porta atual."""
         return self._port.portName()
 
-    def open(self, port_name: str, baud_rate: int) -> None:
+    def open(
+        self,
+        port_name: str,
+        baud_rate: int,
+        data_bits: QSerialPort.DataBits = QSerialPort.DataBits.Data8,
+        parity: QSerialPort.Parity = QSerialPort.Parity.NoParity,
+        stop_bits: QSerialPort.StopBits = QSerialPort.StopBits.OneStop,
+        flow_control: QSerialPort.FlowControl = (
+            QSerialPort.FlowControl.NoFlowControl
+        ),
+    ) -> None:
         """Abre a porta serial indicada.
 
         Args:
             port_name: Nome da porta (ex.: ``"COM3"``).
             baud_rate: Velocidade em baud (ex.: 115200).
+            data_bits: Bits de dados (padrão 8).
+            parity: Paridade (padrão nenhuma).
+            stop_bits: Bits de parada (padrão 1).
+            flow_control: Controle de fluxo (padrão nenhum).
 
         Raises:
             RuntimeError: Se a porta não puder ser aberta.
@@ -299,10 +313,10 @@ class SerialAcquisition(QObject):
         self._pending_line = ""
         self._port.setPortName(port_name)
         self._port.setBaudRate(int(baud_rate))
-        self._port.setDataBits(QSerialPort.DataBits.Data8)
-        self._port.setParity(QSerialPort.Parity.NoParity)
-        self._port.setStopBits(QSerialPort.StopBits.OneStop)
-        self._port.setFlowControl(QSerialPort.FlowControl.NoFlowControl)
+        self._port.setDataBits(data_bits)
+        self._port.setParity(parity)
+        self._port.setStopBits(stop_bits)
+        self._port.setFlowControl(flow_control)
         # ReadWrite: além de receber dados, permite enviar comandos ao
         # embarcado (ex.: configuração e disparo de varredura do AD5933).
         if not self._port.open(QSerialPort.OpenModeFlag.ReadWrite):

@@ -330,6 +330,11 @@ Ao abrir, escolha o tipo de dispositivo:</p>
 <ul>
 <li><b>Porta</b> e <b>Baud</b> (padrão 115200) — "Atualizar portas"
 relê as portas do sistema;</li>
+<li><b>Configuração da comunicação</b> — bits de dados (5–8),
+paridade (nenhuma/par/ímpar), bits de parada (1/1,5/2) e controle de
+fluxo (nenhum, RTS/CTS, XON/XOFF). O padrão <b>8N1 sem fluxo</b> é o
+usado por Arduino/ESP32 e conversores USB-serial; só mude se o manual
+do seu equipamento pedir. O painel trava enquanto conectado;</li>
 <li><b>Formato dos dados</b> — ordem das colunas no formato
 posicional (ex.: <code>10000,10.2,0.00012,-80.2</code>). Linhas
 <b>rotuladas</b> — <code>f=10000 V=10,2 I=0,00012 pha=-80,2</code> ou
