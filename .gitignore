@@ -38,3 +38,7 @@ grafico_personalizado.*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Documentacao do fabricante do kit AD5933 (nao redistribuir no repo)
+013KDT5933-013*/
+013KDT5933-013*.zip
