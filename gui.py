@@ -5354,9 +5354,16 @@ class MainWindow(QMainWindow):
 
     # -- Edição -------------------------------------------------------------
     def _paste_into_table(self) -> None:
-        """Cola a área de transferência na tabela de dados."""
-        self.tabs.setCurrentWidget(self.data_panel)
-        self.data_panel.table.paste_from_clipboard()
+        """Cola a área de transferência na tabela da aba ativa.
+
+        Com a aba Curva I-V ativa, cola na tabela de I-V; nas demais,
+        cola na tabela de dados (aba Dados).
+        """
+        if self.tabs.currentWidget() is self.iv_tab:
+            self.iv_tab.table.paste_from_clipboard()
+        else:
+            self.tabs.setCurrentWidget(self.data_panel)
+            self.data_panel.table.paste_from_clipboard()
 
     # -- Exportação -----------------------------------------------------------
     def _measurements_for_export(self) -> list[Measurement]:
