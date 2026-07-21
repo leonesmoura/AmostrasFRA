@@ -323,6 +323,72 @@ gráfico sobrepõe o ajuste aos dados.</li>
 pacote <i>impedance.py</i>.</p>
 """, None))
 
+    # -- Método CNLS (subtópico do circuito) -------------------------------
+    s.append(("cnls", "Método de ajuste (CNLS)", """
+<h1>O método de regressão: CNLS</h1>
+<p>O ajuste usa <b>mínimos quadrados não lineares complexos</b>
+(CNLS — <i>Complex Nonlinear Least Squares</i>), o método padrão da
+literatura de EIS e dos softwares comerciais (ZView, NOVA, EC-Lab).
+Não confundir com regressão <i>linear</i>: os parâmetros entram no
+modelo em denominadores, produtos e expoentes, exigindo solução
+iterativa.</p>
+<h2>Função objetivo</h2>
+<p>As partes real e imaginária são ajustadas <b>simultaneamente</b>
+(são faces da mesma função, ligadas por Kramers-Kronig):</p>
+<p style="text-align:center;"><i>S(θ) = Σ<sub>k</sub> w<sub>k</sub>
+{ [Z'<sub>k</sub> − Z'(f<sub>k</sub>;θ)]² +
+[Z''<sub>k</sub> − Z''(f<sub>k</sub>;θ)]² }</i></p>
+<p>Geometricamente: cada termo é a distância ao quadrado, no plano
+complexo, entre o ponto medido e o do modelo naquela frequência.</p>
+<h2>Ponderação pelo módulo</h2>
+<p>O programa usa <b>w<sub>k</sub> = 1/|Z<sub>k</sub>|²</b>
+(ponderação proporcional). Como |Z| varia ordens de grandeza no
+espectro, sem ponderação as baixas frequências dominariam e a região
+de alta frequência (onde está o R<sub>s</sub>) seria ignorada. A
+ponderação pelo módulo equivale a assumir erro <i>percentual</i>
+constante do instrumento — a recomendação de Boukamp e de
+Orazem &amp; Tribollet.</p>
+<h2>Algoritmo</h2>
+<ol>
+<li><b>Estimativa inicial derivada dos dados</b> — R<sub>s</sub> =
+intercepto de alta frequência; R<sub>p</sub> = diâmetro do
+semicírculo; C da frequência do pico de −Z''
+(ω·R<sub>p</sub>·C = 1). Determinística: duas execuções dão o mesmo
+resultado;</li>
+<li><b>Iteração Trust Region Reflective</b> (via
+<code>scipy.optimize.curve_fit</code>, encapsulado pelo
+<i>impedance.py</i>) — lineariza localmente (Jacobiano), resolve o
+passo de Gauss-Newton dentro de uma região de confiança e
+<b>respeita as restrições de positividade</b> (R, C, Q &gt; 0),
+nunca visitando valores sem sentido físico;</li>
+<li><b>Convergência</b> — para quando a variação da soma de
+quadrados e dos parâmetros fica abaixo das tolerâncias (se não
+convergir, o programa avisa — normalmente estimativa inicial ruim ou
+modelo inadequado aos dados).</li>
+</ol>
+<h2>O que sai do ajuste</h2>
+<ul>
+<li><b>Parâmetros com incerteza</b> — o erro-padrão vem da matriz de
+covariância no mínimo; parâmetros de incerteza enorme indicam
+correlação (ex.: Q e n do CPE) ou dados insuficientes;</li>
+<li><b>χ² ponderado e χ² reduzido</b> = χ²/(2N − p), com 2N porque
+cada frequência contribui com dois dados (real e imaginário);</li>
+<li><b>RMSE e R²</b> sobre as componentes concatenadas.</li>
+</ul>
+<p><b>Critério de modelo:</b> resíduos aleatórios + χ² reduzido
+estável = modelo adequado; se adicionar um elemento ao circuito
+quase não baixa o χ², é sobreparametrização.</p>
+<h2>Referências clássicas</h2>
+<ul>
+<li>Macdonald &amp; Garber, <i>J. Electrochem. Soc.</i> 124 (1977) —
+formulação do CNLS;</li>
+<li>Boukamp, <i>Solid State Ionics</i> 20 (1986) — EQIVCT e ligação
+com a validação KK;</li>
+<li>Orazem &amp; Tribollet, <i>Electrochemical Impedance
+Spectroscopy</i>, Wiley — capítulos de regressão e ponderação.</li>
+</ul>
+""", "circuito"))
+
     # -- Comparação --------------------------------------------------------
     s.append(("comparacao", "Aba Comparação", f"""
 <h1>Aba Comparação</h1>
