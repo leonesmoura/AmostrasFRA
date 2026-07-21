@@ -4934,17 +4934,35 @@ class MainWindow(QMainWindow):
                 "amostras."
             )
 
+    def _checked_list_items(self) -> list[QListWidgetItem]:
+        """Itens da lista de amostras com o checkbox marcado."""
+        return [
+            self.measurement_list.item(i)
+            for i in range(self.measurement_list.count())
+            if self.measurement_list.item(i).checkState()
+            == Qt.CheckState.Checked
+        ]
+
     def _selected_list_item(
         self, warn: bool = True
     ) -> Optional[QListWidgetItem]:
-        """Item atualmente selecionado na lista (ou None)."""
+        """Item selecionado na lista (ou o único marcado, ou None).
+
+        Sem linha destacada, aceita como alvo a amostra com o
+        checkbox marcado — desde que seja só uma, para não haver
+        ambiguidade.
+        """
         items = self.measurement_list.selectedItems()
         if not items:
+            checked = self._checked_list_items()
+            if len(checked) == 1:
+                return checked[0]
             if warn:
                 QMessageBox.information(
                     self,
                     "Amostras",
-                    "Selecione uma amostra na lista lateral primeiro.",
+                    "Selecione uma amostra na lista lateral primeiro "
+                    "(clique no nome, ou deixe apenas uma marcada).",
                 )
             return None
         return items[0]
@@ -5192,13 +5210,18 @@ class MainWindow(QMainWindow):
         self.show_status(f"Amostra '{new_name}' criada por duplicação.")
 
     def _remove_selected_measurements(self) -> None:
-        """Remove as amostras selecionadas (FRA e curva I-V)."""
+        """Remove as amostras selecionadas ou marcadas (FRA e I-V)."""
         items = self.measurement_list.selectedItems()
+        if not items:
+            # Sem linha destacada: usa as amostras com o checkbox
+            # marcado (a confirmação abaixo lista os nomes).
+            items = self._checked_list_items()
         if not items:
             QMessageBox.information(
                 self,
                 "Amostras",
-                "Selecione ao menos uma amostra para remover.",
+                "Selecione (clique no nome) ou marque ao menos uma "
+                "amostra para remover.",
             )
             return
         names = [item.text() for item in items]
