@@ -84,6 +84,43 @@ imaginária com sinal trocado); em capacitivos, o semicírculo de
 Nyquist aparece <i>acima</i> do eixo, como nos livros de EIS.</p>
 """, None))
 
+    # -- Primeiros passos --------------------------------------------------
+    s.append(("passos", "Primeiros passos (tutorial)", """
+<h1>Primeiros passos — do arquivo ao ajuste em 8 passos</h1>
+<p>Um roteiro completo com uma medição típica:</p>
+<ol>
+<li><b>Importe o espectro</b> — aba <b>Dados</b> → "Importar…" e
+escolha o CSV/Excel do seu instrumento (ou cole com Ctrl+V direto do
+Excel). Confira se as colunas foram reconhecidas.</li>
+<li><b>Crie a medição</b> — clique em "Adicionar como medição" e dê
+um nome (ex.: <code>FRA0F</code>). Ela aparece no dock
+<b>Amostras</b>, já marcada.</li>
+<li><b>Veja os gráficos</b> — abas <b>Nyquist</b> e <b>Bode</b>.
+Repita os passos 1–2 para as demais amostras; marque/desmarque as
+caixas para compará-las.</li>
+<li><b>Valide o espectro</b> — aba <b>Kramers-Kronig</b> →
+"Validar Kramers-Kronig". Resíduos aleatórios dentro de ±1–2%?
+Dados bons. Forma sistemática? Desconfie (deriva, ruído,
+não-linearidade) e considere repetir a medição.</li>
+<li><b>Corrija o instrumento</b> (se você tem a medição de um
+resistor padrão) — menu <b>Análise → Correção do Instrumento</b>.
+Duplique a medição antes de aplicar, para manter a original.</li>
+<li><b>Ajuste o circuito equivalente</b> — aba <b>Circuito
+Equivalente</b>: escolha um modelo (ou monte no editor), clique em
+"Ajustar circuito" e avalie R², χ² e a sobreposição no gráfico.</li>
+<li><b>Curva I-V</b> (opcional) — importe na aba <b>Curva I-V</b>,
+associe à medição FRA e rode "Ajustar modelo de diodo…" para obter
+os 5 parâmetros elétricos do módulo.</li>
+<li><b>Salve o projeto</b> — <b>Arquivo → Salvar projeto…</b>
+(<code>.fra</code>). Amanhã, "Abrir projeto…" devolve tudo:
+medições, correções, ajustes, cores e marcações.</li>
+</ol>
+<p>Para gerar figuras de artigo ao final: dock Opções → "Fundo claro
+(publicação)" e <b>Ferramentas → Criador de gráficos…</b> (com zoom
+de destaque). Para registrar o ensaio: <b>Arquivo → Exportar →
+Relatório PDF</b>.</p>
+""", None))
+
     # -- Aba Dados ---------------------------------------------------------
     s.append(("dados", "Aba Dados", f"""
 <h1>Aba Dados</h1>
@@ -188,9 +225,17 @@ Amostras:</p>
 <li><b>Bode Magnitude</b> — |Z| vs. frequência (log-log);</li>
 <li><b>Bode Fase</b> — fase vs. frequência (semilog).</li>
 </ul>
-<p>A barra do matplotlib (embaixo de cada gráfico) permite zoom,
-pan e salvar a figura. Os gráficos redesenham automaticamente ao
-marcar/desmarcar medições ou mudar o estilo no dock Opções.</p>
+<p>A barra de navegação de cada gráfico traz, da esquerda para a
+direita: <b>casa</b> (restaura a visão original), <b>setas</b>
+(desfaz/refaz o zoom), <b>cruz</b> (pan — arrastar o gráfico),
+<b>lupa</b> (zoom por retângulo), <b>ajustes</b> (margens),
+<b>disquete</b> (salvar a figura como imagem). O botão
+<b>Cursor</b> liga um cursor de leitura que mostra as coordenadas
+do ponto sob o mouse — útil para ler frequências características
+direto do gráfico.</p>
+<p>Os gráficos redesenham automaticamente ao marcar/desmarcar
+medições no dock Amostras ou mudar qualquer estilo no dock
+Opções.</p>
 <h2>Dock "Opções de gráfico"</h2>
 <ul>
 <li><b>Marcador</b> (símbolo e tamanho) e <b>linha</b> (espessura e
@@ -282,14 +327,34 @@ pacote <i>impedance.py</i>.</p>
     s.append(("comparacao", "Aba Comparação", f"""
 <h1>Aba Comparação</h1>
 {_img("comparacao.png", 720)}
-<p>Compara os <b>parâmetros ajustados entre amostras</b> — tanto os
-do circuito equivalente quanto os do modelo de diodo — em gráficos
-de barras/dispersão. Útil para enxergar a assinatura de cada falha
-(ex.: aumento de R<sub>s</sub> por corrosão, queda de R<sub>p</sub>
-por PID).</p>
-<p>Use <b>Selecionar todas</b> para incluir todas as amostras com
-ajuste; a janela "Comparação — modelo de diodo entre amostras"
-resume os 5 parâmetros lado a lado.</p>
+<p>Sobrepõe <b>várias medições no mesmo gráfico</b>, em um layout
+dedicado à comparação visual entre amostras — é aqui que a
+assinatura de cada falha salta aos olhos (ex.: semicírculo maior =
+mais resistência de transferência; achatamento = dispersão/CPE).</p>
+<h2>Como usar</h2>
+<ol>
+<li>Na lista à esquerda, marque as medições a comparar (ou clique em
+<b>Selecionar todas</b>);</li>
+<li>Escolha o <b>tipo de gráfico</b>:
+<ul>
+<li><b>Nyquist</b> — −Z'' vs. Z', escala 1:1;</li>
+<li><b>Bode — Magnitude</b> — |Z| vs. f (log-log);</li>
+<li><b>Bode — Fase</b> — fase vs. f (semilog);</li>
+<li><b>Bode completo</b> — |Z| e fase juntos, em dois painéis
+alinhados pela frequência (prático para relatórios);</li>
+</ul></li>
+<li>O gráfico usa as cores por curva definidas no dock Amostras —
+padronize as cores antes para manter a identidade de cada amostra em
+todas as figuras.</li>
+</ol>
+<h2>Comparação de parâmetros do modelo de diodo</h2>
+<p>Após <b>"Ajustar todas…"</b> na janela do modelo de diodo (aba
+Curva I-V), abre-se a janela <b>"Comparação — modelo de diodo entre
+amostras"</b>: uma tabela com I<sub>L</sub>, I₀, R<sub>s</sub>,
+R<sub>p</sub> e <i>a</i> de todas as curvas lado a lado, além do R²
+de cada ajuste. É o resumo ideal para a análise de degradação
+(R<sub>s</sub> subindo → corrosão/solda; R<sub>p</sub> caindo →
+PID/shunt; I₀ subindo → degradação da junção).</p>
 """, None))
 
     # -- Correção ----------------------------------------------------------
@@ -299,6 +364,13 @@ resume os 5 parâmetros lado a lado.</p>
 <p>Remove do espectro a resposta do próprio instrumento/cabos
 (função de transferência H(f)), medida com um <b>padrão conhecido</b>
 (ex.: resistor de precisão).</p>
+<p><b>A ideia:</b> medindo um padrão de valor conhecido
+Z<sub>nominal</sub>, tudo o que o instrumento "acrescenta" aparece
+na razão <i>H(f) = Z<sub>medido</sub>(f) / Z<sub>nominal</sub></i>.
+Ao aplicar a correção, cada medição é dividida por H(f) — ganho e
+fase espúrios de cabos, shunt e eletrônica são descontados em toda a
+faixa de frequência. Vale para o mesmo arranjo físico: se trocar
+cabos ou faixa do instrumento, gere nova correção.</p>
 <p><b>Passo a passo:</b></p>
 <ol>
 <li>Meça o padrão conhecido no instrumento e importe o espectro;</li>
@@ -378,22 +450,78 @@ Dados;</li>
 <h1>Simulação do módulo fotovoltaico</h1>
 {_img("simulacao.png", 700)}
 <p>(Ferramentas → Simulação do módulo FV) Janela didática com uma
-<b>animação do módulo</b>: escolha a tecnologia da célula
-(mono-Si, poli-Si, filme fino…) e veja a estrutura de camadas e o
-modelo atômico correspondente, com a geração de portadores animada.
-Útil para apresentações e para o texto da dissertação.</p>
+<b>animação física do módulo</b>, pensada para apresentações, aulas
+e as figuras conceituais da dissertação. Tem duas abas:</p>
+<ul>
+<li><b>Módulo (corte)</b> — corte transversal com as camadas reais
+(vidro, EVA, célula, backsheet, moldura) e os <b>fótons chegando e
+gerando pares elétron-lacuna</b>, com o fluxo de portadores até os
+contatos;</li>
+<li><b>Modelo atômico (Si, dopagem n/p)</b> — a rede cristalina do
+silício com os dopantes (fósforo/boro), mostrando eletrão livre e
+lacuna e o campo da junção p-n.</li>
+</ul>
+<h2>Controles</h2>
+<ul>
+<li><b>Tecnologia</b> — mono-Si, poli-Si, filme fino etc.; o corte e
+a legenda técnica mudam conforme a tecnologia escolhida;</li>
+<li><b>Irradiância</b> — controla quantos fótons por segundo chegam
+(mais luz = mais pares gerados na animação);</li>
+<li><b>Velocidade</b> — acelera/desacelera a animação (ex.: 0,5×
+para explicar com calma, 2× para demonstração rápida);</li>
+<li><b>Pausar</b> — congela o quadro atual (bom para capturar a tela
+para um slide);</li>
+<li><b>Caixa de mapeamento</b> — realça a correspondência entre as
+regiões do corte e os elementos do modelo atômico.</li>
+</ul>
 """, None))
 
     # -- Criador de gráficos ----------------------------------------------
     s.append(("criador", "Criador de gráficos", f"""
 <h1>Criador de gráficos com zoom de destaque</h1>
 {_img("criador_graficos.png", 700)}
-<p>(Ferramentas → Criador de gráficos…) Monta figuras prontas para
-publicação combinando as medições marcadas, com um <b>inset de
-zoom</b> (retângulo de destaque ampliado) sobre a região de
-interesse — típico em Nyquist para mostrar a região de alta
-frequência. Escolha o tipo de gráfico, a região do zoom e exporte em
-PNG/SVG de alta resolução.</p>
+<p>(Ferramentas → Criador de gráficos…) Ambiente dedicado a montar
+<b>figuras prontas para publicação</b>, independente das abas de
+visualização. Os grupos de controles:</p>
+<h2>Medições</h2>
+<ul>
+<li><b>Sincronizar medições</b> — traz para a lista as medições da
+sessão; use <b>Todas/Nenhuma</b> para marcar em massa;</li>
+<li><b>Fonte</b> — escolha entre os dados FRA ou as curvas I-V.</li>
+</ul>
+<h2>Gráfico</h2>
+<ul>
+<li><b>Tipo</b> — Nyquist, Bode etc.;</li>
+<li><b>Eixo X/Y logarítmico</b> e <b>Grade</b> — controle fino das
+escalas (num Bode, X log é o usual);</li>
+</ul>
+<h2>Cores</h2>
+<ul>
+<li><b>Mapa de cores</b> — aplica uma paleta (colormap) a todas as
+curvas de uma vez — útil para uma série FRA0F→FRA5F em gradiente;</li>
+<li><b>Fundo claro (publicação)</b> — tema branco para artigo;</li>
+<li><b>Limpar cores das curvas</b> — volta às cores automáticas.</li>
+</ul>
+<h2>Marcador, linha e legenda</h2>
+<ul>
+<li>Símbolo e tamanho do marcador, espessura e estilo da linha;</li>
+<li><b>Exibir legenda</b> e a <b>posição</b> dela (ex.: canto
+superior direito, fora do gráfico…).</li>
+</ul>
+<h2>Zoom de destaque (inset)</h2>
+<ol>
+<li>Marque <b>"Ativar zoom de destaque"</b>;</li>
+<li>Clique em <b>"Selecionar região"</b> e arraste um retângulo
+sobre a área de interesse no gráfico (tipicamente a região de alta
+frequência do Nyquist, colada na origem);</li>
+<li>Escolha o <b>alvo do zoom</b> (qual curva/painel amplia) e a
+<b>posição do inset</b> na figura;</li>
+<li>O retângulo de origem e as linhas de ligação são desenhados
+automaticamente, no estilo das figuras de artigos de EIS.</li>
+</ol>
+<p>Por fim, <b>Atualizar gráfico</b> re-renderiza com os ajustes e
+<b>Exportar imagem…</b> salva em PNG/SVG/PDF de alta resolução
+(SVG/PDF são vetoriais — ideais para a dissertação em LaTeX).</p>
 """, None))
 
     # -- Menus / arquivos --------------------------------------------------
@@ -402,12 +530,22 @@ PNG/SVG de alta resolução.</p>
 <h2>Arquivo</h2>
 <ul>
 <li><b>Abrir projeto… / Salvar projeto…</b> — sessão completa em um
-arquivo <code>.fra</code> (ver tópico "Projetos e arquivos");</li>
-<li><b>Importar…</b> — dados para a aba ativa;</li>
-<li><b>Exportar ▸ Excel / CSV / Imagem do gráfico / Relatório
-PDF</b> — o relatório PDF reúne gráficos, parâmetros de ajuste e um
-campo de observações;</li>
-<li><b>Sair</b>.</li>
+arquivo <code>.fra</code> (ver tópico "Projetos e arquivos"). Abrir
+substitui a sessão atual — o programa pede confirmação;</li>
+<li><b>Importar…</b> (Ctrl+I) — abre o arquivo na aba ativa (Dados
+ou Curva I-V);</li>
+<li><b>Exportar ▸</b>
+<ul>
+<li><b>Excel…</b> — planilha com uma aba por medição marcada;</li>
+<li><b>CSV…</b> — arquivo único autocontido (FRA + I-V), que o
+próprio programa reimporta por completo;</li>
+<li><b>Imagem do gráfico…</b> — salva a aba de gráfico ativa em
+PNG/SVG/PDF;</li>
+<li><b>Relatório PDF…</b> — abre a janela de observações e gera um
+PDF com os gráficos, os parâmetros dos ajustes e as suas notas do
+ensaio;</li>
+</ul></li>
+<li><b>Sair</b> (Ctrl+Q).</li>
 </ul>
 <h2>Editar</h2>
 <ul><li>Colar na tabela (Ctrl+V), Adicionar 20 linhas, Limpar
@@ -417,15 +555,32 @@ tabela.</li></ul>
 carregar, renomear, duplicar, remover, marcar/desmarcar
 todas).</li></ul>
 <h2>Análise</h2>
-<ul><li>Validar Kramers-Kronig; Ajustar circuito equivalente;
-Correção do Instrumento; Aplicar correção à medição.</li></ul>
+<ul>
+<li><b>Validar Kramers-Kronig</b> — atalho para a validação da
+medição selecionada (equivale à aba Kramers-Kronig);</li>
+<li><b>Ajustar circuito equivalente</b> — leva à aba de ajuste;</li>
+<li><b>Correção do Instrumento</b> — abre a biblioteca de correções
+(calcular H(f) com padrão conhecido, salvar, importar/exportar);</li>
+<li><b>Aplicar correção à medição…</b> — escolhe uma correção da
+biblioteca e aplica à medição selecionada (duplique antes para
+preservar a original).</li>
+</ul>
 <h2>Ferramentas</h2>
-<ul><li>Conexão Serial…; Criador de gráficos…; Simulação do módulo
-FV.</li></ul>
+<ul>
+<li><b>Conexão Serial…</b> — recebe pontos de um embarcado
+(dispositivo genérico ou AD5933 via ESP32);</li>
+<li><b>Criador de gráficos…</b> — figuras de publicação com zoom de
+destaque;</li>
+<li><b>Simulação do módulo FV</b> — animação didática do módulo.</li>
+</ul>
 <h2>Exibir</h2>
-<ul><li>Mostra/oculta os docks Amostras e Opções de gráfico.</li></ul>
+<ul><li>Mostra/oculta os docks <b>Amostras</b> e <b>Opções de
+gráfico</b>. Os docks também podem ser arrastados para outra borda
+da janela ou destacados como janelas flutuantes — a posição é
+lembrada entre sessões.</li></ul>
 <h2>Ajuda</h2>
-<ul><li>Guia do usuário (F1) — esta janela; Sobre…</li></ul>
+<ul><li><b>Guia do usuário</b> (F1) — esta janela;
+<b>Sobre…</b> — versão do programa e créditos.</li></ul>
 <p>A <b>barra de ferramentas</b> repete os comandos mais usados:
 abrir/salvar projeto, importar, adicionar medição, KK, ajuste,
 correção, serial, criador de gráficos, simulação e relatório.</p>
