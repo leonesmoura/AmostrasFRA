@@ -33,12 +33,31 @@ import gui
 import util
 
 
-def salva(widget, nome: str) -> None:
-    """Fotografa o widget e grava em assets/ajuda/<nome>.png."""
+#: Largura de exibição no guia (px). As imagens são gravadas já neste
+#: tamanho, com filtro suave — o QTextBrowser não precisa reescalar
+#: (a reescala dele é serrilhada). A versão _full fica para ampliar.
+LARGURA_GUIA = 780
+
+
+def salva(widget, nome: str, largura: int = LARGURA_GUIA) -> None:
+    """Fotografa o widget e grava as duas versões do guia.
+
+    ``<nome>.png`` — reduzida com SmoothTransformation à largura de
+    exibição; ``<nome>_full.png`` — resolução original (aberta ao
+    clicar na imagem no guia).
+    """
     widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
     widget.show()
     app.processEvents()
-    widget.grab().save(str(OUT / f"{nome}.png"))
+    pix = widget.grab()
+    pix.save(str(OUT / f"{nome}_full.png"))
+    if largura and pix.width() > largura:
+        img = pix.toImage().scaledToWidth(
+            largura, Qt.TransformationMode.SmoothTransformation
+        )
+        img.save(str(OUT / f"{nome}.png"))
+    else:
+        pix.save(str(OUT / f"{nome}.png"))
     widget.hide()
     print(f"ok  {nome}.png")
 

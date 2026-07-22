@@ -33,20 +33,29 @@ import util
 def _img(name: str, width: int = 640) -> str:
     """HTML de uma captura de tela do guia (se o arquivo existir).
 
+    A imagem é exibida no tamanho natural do arquivo (que já é gerado
+    na largura do guia, com filtro suave — reescalar no HTML borra).
+    Clicar na imagem abre a versão em resolução original
+    (``<nome>_full.png``) no visualizador do sistema.
+
     Args:
         name: Nome do arquivo em ``assets/ajuda`` (ex.: ``"dados.png"``).
-        width: Largura de exibição em pixels.
+        width: Ignorado (mantido por compatibilidade das chamadas).
 
     Returns:
-        Tag ``<img>`` centralizada, ou string vazia se a imagem não
-        estiver disponível (o guia continua funcional sem as figuras).
+        Tag ``<img>`` centralizada e clicável, ou string vazia se a
+        imagem não existir (o guia continua funcional sem as figuras).
     """
     path = Path(util.resource_path(f"assets/ajuda/{name}"))
     if not path.is_file():
         return ""
+    full = path.with_name(f"{path.stem}_full{path.suffix}")
+    target = full if full.is_file() else path
     return (
-        f'<p style="text-align:center;"><img src="{path.as_uri()}" '
-        f'width="{width}"/></p>'
+        f'<p style="text-align:center;">'
+        f'<a href="{target.as_uri()}"><img src="{path.as_uri()}"/></a>'
+        f'<br><span style="color:#888888; font-size:11px;">'
+        f'(clique na imagem para ampliar)</span></p>'
     )
 
 
