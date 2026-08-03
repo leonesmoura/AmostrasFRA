@@ -55,7 +55,12 @@ inspirados nos softwares Metrohm NOVA, ZView e EC-Lab.
     configuráveis, cores automáticas);
   - **Bode Magnitude** (`|Z|` × f, log-log) e **Bode Fase** (fase × f,
     semilog);
-  - **Kramers-Kronig**, **Circuito Equivalente** e **Comparação**.
+  - **Kramers-Kronig**, **Circuito Equivalente** e **Comparação**;
+  - **Parâmetros** — gráfico dos parâmetros ajustados (Rs, Rp, C, CPE,
+    Warburg ou os do modelo de diodo) em função de uma **variável de
+    ensaio** (por padrão o *número de pancadas*), com **barras de erro**
+    das incertezas do ajuste, escala log, normalização em % da primeira
+    amostra e exportação de imagem e tabela.
 - **Correção do instrumento** com **biblioteca de correções nomeadas**:
   janela própria onde se cadastram várias correções (uma por
   instrumento/resistor padrão), cada uma com nome, resistência nominal e
@@ -209,8 +214,10 @@ python AmostrasFRA.py
 6. Valide a consistência dos dados na aba **Kramers-Kronig**.
 7. Ajuste um circuito equivalente na aba **Circuito Equivalente**.
 8. Compare medições na aba **Comparação**.
-9. Exporte os resultados em **Arquivo → Exportar** (Excel, CSV, imagem ou
-   relatório PDF).
+9. Na aba **Parâmetros**, informe o número de pancadas de cada amostra e
+   plote a evolução de Rs, Rp, CPE etc. com barras de erro.
+10. Exporte os resultados em **Arquivo → Exportar** (Excel, CSV, imagem ou
+    relatório PDF).
 
 ## Estrutura do projeto
 

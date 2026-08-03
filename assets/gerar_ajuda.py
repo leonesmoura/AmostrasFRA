@@ -29,6 +29,7 @@ from PySide6.QtWidgets import QApplication
 
 app = QApplication([])
 
+import circuitos
 import gui
 import util
 
@@ -73,10 +74,13 @@ freq = np.logspace(0, 5, 60)
 window = gui.MainWindow()
 window.resize(1280, 800)
 
-for nome, rs, rp, c in (
+# Série de degradação: Rs sobe e Rp cai a cada pancada — dá material
+# tanto para os gráficos de espectro quanto para a aba Parâmetros.
+for pancadas, (nome, rs, rp, c) in enumerate((
     ("FRA0F (íntegro)", 10.0, 1000.0, 1e-6),
+    ("FRA1F", 16.0, 800.0, 1.3e-6),
     ("FRA3F (degradado)", 25.0, 400.0, 2e-6),
-):
+)):
     z = randles(rs, rp, c, freq)
     m = util.Measurement.from_components(
         name=nome,
@@ -85,6 +89,10 @@ for nome, rs, rp, c in (
         minus_z_imag=(-z.imag).tolist(),
     )
     window.add_measurement(m)
+    window.fit_results[nome] = circuitos.fit_circuit(
+        window.measurements[nome], "randles"
+    )
+    window.sample_variables[nome] = float(pancadas)
 
 v = np.linspace(0.0, 34.0, 80)
 il, i0, a, rp_iv = 8.5, 1e-9, 1.9, 350.0
@@ -95,6 +103,17 @@ window.add_iv_curve(
 
 app.processEvents()
 
+# Aba Parâmetros: marca Rs e Rp para a captura mostrar a tendência.
+window.parameters_tab.sync_samples()
+for indice in range(window.parameters_tab.param_list.count()):
+    item = window.parameters_tab.param_list.item(indice)
+    item.setCheckState(
+        Qt.CheckState.Checked
+        if item.data(Qt.ItemDataRole.UserRole) in ("Rs", "Rp")
+        else Qt.CheckState.Unchecked
+    )
+app.processEvents()
+
 # -- Janela principal e abas ------------------------------------------------
 ABAS = {
     "dados": 0,
@@ -103,6 +122,7 @@ ABAS = {
     "kk": 5,
     "circuito": 6,
     "comparacao": 7,
+    "parametros": 8,
 }
 window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
 window.show()

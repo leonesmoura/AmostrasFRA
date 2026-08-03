@@ -252,6 +252,10 @@ class ProjectData:
     fit_results: dict[str, FitResult] = field(default_factory=dict)
     iv_fit_results: dict[str, IVFitResult] = field(default_factory=dict)
     kk_results: dict[str, KKResult] = field(default_factory=dict)
+    #: Nome da variável de ensaio (eixo X da aba Parâmetros).
+    sample_variable_name: str = "Número de pancadas"
+    #: Valor da variável de ensaio por amostra.
+    sample_variables: dict[str, float] = field(default_factory=dict)
 
 
 def save_project(path: str | Path, data: ProjectData) -> None:
@@ -280,6 +284,11 @@ def save_project(path: str | Path, data: ProjectData) -> None:
             _iv_fit_to(r) for r in data.iv_fit_results.values()
         ],
         "kk_results": [_kk_to(r) for r in data.kk_results.values()],
+        "sample_variable_name": data.sample_variable_name,
+        "sample_variables": {
+            name: _num(value)
+            for name, value in data.sample_variables.items()
+        },
     }
     Path(path).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
@@ -364,4 +373,14 @@ def load_project(path: str | Path) -> ProjectData:
         fit_results=fit_results,
         iv_fit_results=iv_fit_results,
         kk_results=kk_results,
+        sample_variable_name=str(
+            payload.get("sample_variable_name") or "Número de pancadas"
+        ),
+        sample_variables={
+            str(name): float(value)
+            for name, value in (
+                payload.get("sample_variables") or {}
+            ).items()
+            if value is not None
+        },
     )

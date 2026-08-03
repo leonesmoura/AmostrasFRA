@@ -31,6 +31,7 @@ from matplotlib.backends.backend_qtagg import (
 )
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
@@ -936,6 +937,10 @@ def _legend_color(rc_key: str, ax) -> object:
 _IV_PARAM_NAMES: tuple[str, ...] = ("I_L", "I_0", "R_s", "R_p", "a")
 _IV_PARAM_UNITS: tuple[str, ...] = ("A", "A", "Ω", "Ω", "V")
 
+#: Aliases públicos (usados pela aba de parâmetros da interface).
+IV_PARAM_NAMES: tuple[str, ...] = _IV_PARAM_NAMES
+IV_PARAM_UNITS: tuple[str, ...] = _IV_PARAM_UNITS
+
 
 def plot_diode_fit(
     figure: Figure,
@@ -1009,6 +1014,180 @@ def plot_diode_fit(
             "alpha": 0.9,
         },
     )
+
+
+@dataclass(frozen=True)
+class ParameterSeries:
+    """Série de um parâmetro ajustado ao longo das amostras.
+
+    Attributes:
+        name: Nome do parâmetro (ex.: ``"Rs"``, ``"R_p"``, ``"Q"``).
+        unit: Unidade do parâmetro (ex.: ``"Ω"``); pode ser vazia.
+        labels: Nomes das amostras, na ordem dos valores.
+        values: Valores ajustados do parâmetro (um por amostra).
+        errors: Incertezas 1σ (``nan`` onde indisponível).
+        x: Variável de ensaio (ex.: número de pancadas) ou ``None``
+            para usar as amostras como eixo categórico.
+    """
+
+    name: str
+    unit: str
+    labels: tuple[str, ...]
+    values: np.ndarray
+    errors: np.ndarray
+    x: Optional[np.ndarray] = None
+
+
+def _cycle_color(index: int) -> str:
+    """Cor da paleta atual do Matplotlib para a série ``index``."""
+    colors = matplotlib.rcParams["axes.prop_cycle"].by_key().get(
+        "color", ["C0"]
+    )
+    return colors[index % len(colors)]
+
+
+def _series_errorbars(errors: np.ndarray) -> Optional[np.ndarray]:
+    """Barras de erro utilizáveis (``None`` se todas indisponíveis)."""
+    err = np.asarray(errors, dtype=float)
+    if err.size == 0 or not np.any(np.isfinite(err)):
+        return None
+    # NaN isolado vira 0 para não apagar a série inteira.
+    return np.nan_to_num(err, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _normalized(
+    values: np.ndarray, errors: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Valores em % da primeira amostra finita (erros proporcionais)."""
+    finite = np.nonzero(np.isfinite(values) & (values != 0.0))[0]
+    if finite.size == 0:
+        return values, errors
+    reference = float(values[finite[0]])
+    return (
+        values / reference * 100.0,
+        np.asarray(errors, dtype=float) / abs(reference) * 100.0,
+    )
+
+
+def plot_parameter_series(
+    figure: Figure,
+    series: Sequence[ParameterSeries],
+    style: Optional[PlotStyle] = None,
+    *,
+    x_label: str = "Amostra",
+    log_y: bool = False,
+    normalize: bool = False,
+    kind: str = "linha",
+    title: Optional[str] = None,
+) -> None:
+    """Plota parâmetros ajustados em função da amostra ou do ensaio.
+
+    Cada parâmetro vira uma série com **barras de erro** vindas das
+    incertezas do ajuste.  Com ``normalize``, todas as séries são
+    expressas em porcentagem da primeira amostra e compartilham um
+    único eixo (permite comparar parâmetros de unidades diferentes);
+    sem normalização, cada parâmetro ganha seu próprio painel, já que
+    as unidades não são comparáveis.
+
+    Args:
+        figure: Figura de destino (será preenchida; limpe antes).
+        series: Séries de parâmetros a plotar.
+        style: Estilo de marcadores/linhas (opcional).
+        x_label: Rótulo do eixo X (ex.: ``"Número de pancadas"``).
+        log_y: Usa escala logarítmica no eixo Y (útil para I₀).
+        normalize: Expressa os valores em % da primeira amostra.
+        kind: ``"linha"`` (com marcadores) ou ``"barra"``.
+        title: Título da figura (opcional).
+
+    Raises:
+        ValueError: Se ``series`` estiver vazia ou ``kind`` for
+            desconhecido.
+    """
+    if not series:
+        raise ValueError("Nenhum parâmetro selecionado para o gráfico.")
+    if kind not in ("linha", "barra"):
+        raise ValueError(f"Tipo de gráfico desconhecido: '{kind}'.")
+    style = style or PlotStyle()
+
+    # Um painel só quando normalizado (mesma unidade: %) ou com um
+    # único parâmetro; caso contrário, um painel por parâmetro.
+    single_axes = normalize or len(series) == 1
+    n_axes = 1 if single_axes else len(series)
+    axes = figure.subplots(n_axes, 1, sharex=True, squeeze=False)[:, 0]
+
+    for index, item in enumerate(series):
+        ax = axes[0] if single_axes else axes[index]
+        values = np.asarray(item.values, dtype=float)
+        errors = np.asarray(item.errors, dtype=float)
+        if normalize:
+            values, errors = _normalized(values, errors)
+
+        if item.x is not None:
+            x = np.asarray(item.x, dtype=float)
+            order = np.argsort(x)
+            x, values, errors = x[order], values[order], errors[order]
+            tick_labels = None
+        else:
+            x = np.arange(len(values), dtype=float)
+            tick_labels = list(item.labels)
+
+        unit = f" ({item.unit})" if item.unit and not normalize else ""
+        label = f"{item.name}{unit}"
+        yerr = _series_errorbars(errors)
+        color = _cycle_color(index)
+
+        if kind == "barra":
+            # Com um parâmetro só, cada barra é uma amostra: usa as
+            # cores por curva escolhidas pelo usuário, quando houver.
+            colors = (
+                [style.colors.get(name, color) for name in item.labels]
+                if len(series) == 1
+                else color
+            )
+            ax.bar(
+                x,
+                values,
+                yerr=yerr,
+                color=colors,
+                capsize=4,
+                label=label,
+                error_kw={"ecolor": "gray", "elinewidth": 1.0},
+            )
+        else:
+            ax.errorbar(
+                x,
+                values,
+                yerr=yerr,
+                marker=style.marker or "o",
+                markersize=style.marker_size,
+                linewidth=style.line_width,
+                linestyle=(
+                    style.line_style
+                    if style.line_style != "none"
+                    else "-"
+                ),
+                color=color,
+                capsize=4,
+                label=label,
+            )
+
+        if tick_labels is not None:
+            ax.set_xticks(x)
+            ax.set_xticklabels(tick_labels, rotation=30, ha="right")
+        elif x.size and bool(np.all(x == np.round(x))):
+            # Variáveis de contagem (nº de pancadas, ciclos) não têm
+            # sentido fracionário: só marcações inteiras no eixo X.
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        # Escala logarítmica exige valores estritamente positivos.
+        finite = values[np.isfinite(values)]
+        if log_y and finite.size and bool(np.all(finite > 0)):
+            ax.set_yscale("log")
+        ax.set_ylabel("Valor relativo (%)" if normalize else label)
+        _finalize_axes(ax, style)
+
+    axes[-1].set_xlabel(x_label)
+    if title:
+        figure.suptitle(title, fontsize=11)
 
 
 def plot_comparison(

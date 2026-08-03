@@ -80,7 +80,8 @@ ajusta espectros de impedância, além de curvas I-V dos módulos.</p>
 <li><b>Dock "Amostras"</b> (esquerda): lista de medições; a caixa de
 seleção de cada uma define o que aparece nos gráficos.</li>
 <li><b>Abas centrais</b>: Dados, Curva I-V, Nyquist, Bode Magnitude,
-Bode Fase, Kramers-Kronig, Circuito Equivalente e Comparação.</li>
+Bode Fase, Kramers-Kronig, Circuito Equivalente, Comparação e
+Parâmetros.</li>
 <li><b>Dock "Opções de gráfico"</b> (direita): estilo dos gráficos
 (marcador, linha, grade, cores de fundo e por curva).</li>
 </ul>
@@ -120,9 +121,14 @@ Equivalente</b>: escolha um modelo (ou monte no editor), clique em
 <li><b>Curva I-V</b> (opcional) — importe na aba <b>Curva I-V</b>,
 associe à medição FRA e rode "Ajustar modelo de diodo…" para obter
 os 5 parâmetros elétricos do módulo.</li>
+<li><b>Veja a degradação</b> — aba <b>Parâmetros</b>: informe o
+número de pancadas de cada amostra e plote R<sub>s</sub>,
+R<sub>p</sub> etc. em função dele, com barras de erro. É o gráfico
+de resultado do trabalho.</li>
 <li><b>Salve o projeto</b> — <b>Arquivo → Salvar projeto…</b>
 (<code>.fra</code>). Amanhã, "Abrir projeto…" devolve tudo:
-medições, correções, ajustes, cores e marcações.</li>
+medições, correções, ajustes, o número de pancadas, cores e
+marcações.</li>
 </ol>
 <p>Para gerar figuras de artigo ao final: dock Opções → "Fundo claro
 (publicação)" e <b>Ferramentas → Criador de gráficos…</b> (com zoom
@@ -430,6 +436,65 @@ R<sub>p</sub> e <i>a</i> de todas as curvas lado a lado, além do R²
 de cada ajuste. É o resumo ideal para a análise de degradação
 (R<sub>s</sub> subindo → corrosão/solda; R<sub>p</sub> caindo →
 PID/shunt; I₀ subindo → degradação da junção).</p>
+""", None))
+
+    # -- Parâmetros --------------------------------------------------------
+    s.append(("parametros", "Aba Parâmetros", f"""
+<h1>Aba Parâmetros — degradação em função do ensaio</h1>
+{_img("parametros.png", 720)}
+<p>Plota os <b>parâmetros extraídos dos ajustes</b> (R<sub>s</sub>,
+R<sub>p</sub>, C, CPE Q e n, Warburg, ou os 5 do modelo de diodo) em
+função das amostras ou de uma <b>variável de ensaio</b> — por padrão
+o <b>número de pancadas</b>. É o gráfico que mostra a assinatura da
+degradação e que normalmente vai para a dissertação.</p>
+<h2>Passo a passo</h2>
+<ol>
+<li>Ajuste as amostras primeiro (aba Circuito Equivalente, ou
+"Ajustar modelo de diodo…" na aba Curva I-V). Só amostras ajustadas
+aparecem aqui;</li>
+<li>Escolha a <b>fonte dos parâmetros</b>: circuito equivalente ou
+modelo de diodo;</li>
+<li>Marque os <b>parâmetros a plotar</b> na lista;</li>
+<li>Em <b>"Valor por amostra"</b>, digite o número de pancadas de
+cada amostra (0, 1, 2, …). O nome da variável é editável — troque
+por "ciclos térmicos", "horas de PID" ou o que seu ensaio usar;</li>
+<li>O gráfico atualiza sozinho a cada mudança.</li>
+</ol>
+<h2>Controles</h2>
+<ul>
+<li><b>Eixo X</b> — "Variável de ensaio" (nº de pancadas) ou
+"Amostras (ordem)", que usa os nomes como eixo categórico;</li>
+<li><b>Gráfico</b> — linha com marcadores (mostra tendência) ou
+barras (comparação ponto a ponto; com um único parâmetro, cada barra
+usa a cor da amostra definida no dock Amostras);</li>
+<li><b>Eixo Y logarítmico</b> — essencial para I₀ e Q, que variam
+ordens de grandeza;</li>
+<li><b>Normalizar (% da 1ª amostra)</b> — expressa tudo em
+porcentagem do módulo íntegro. É o que permite pôr R<sub>s</sub> e
+R<sub>p</sub> no mesmo eixo apesar das unidades diferentes:
+"R<sub>s</sub> subiu para 280% e R<sub>p</sub> caiu para 46% após 3
+pancadas".</li>
+</ul>
+<h2>Barras de erro</h2>
+<p>As barras vêm das <b>incertezas 1σ do próprio ajuste</b> (matriz
+de covariância do CNLS) — não é preciso calcular nada à parte. Uma
+barra grande avisa que aquele parâmetro está mal determinado (típico
+de Q e n, que são correlacionados) e que a conclusão sobre ele
+precisa de cautela.</p>
+<h2>Exportação</h2>
+<ul>
+<li><b>Exportar imagem…</b> — PNG/SVG/PDF (SVG e PDF são vetoriais,
+ideais para LaTeX);</li>
+<li><b>Exportar tabela…</b> — CSV com uma linha por amostra e
+colunas de valor <i>e</i> incerteza de cada parâmetro, além da
+variável de ensaio — pronto para o Origin ou para uma tabela da
+dissertação.</li>
+</ul>
+<p><b>Observação:</b> se as amostras foram ajustadas com modelos
+diferentes (ex.: uma com Randles e outra com CPE), cada parâmetro é
+plotado apenas com as amostras que o possuem — nada é inventado.
+Amostras sem valor da variável de ensaio ficam fora do gráfico e são
+listadas no aviso abaixo dele.</p>
 """, None))
 
     # -- Correção ----------------------------------------------------------

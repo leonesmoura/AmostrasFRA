@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 import numpy as np
@@ -86,6 +87,9 @@ from graficos import ChartBuilderDialog
 from simulacao import PVSimulationDialog
 from plots import (
     ColorButton,
+    IV_PARAM_NAMES,
+    IV_PARAM_UNITS,
+    ParameterSeries,
     PlotCanvas,
     PlotStyle,
     apply_background,
@@ -96,6 +100,7 @@ from plots import (
     plot_diode_fit,
     plot_kk,
     plot_nyquist,
+    plot_parameter_series,
     mathtext_to_pixmap,
 )
 from util import (
@@ -1844,6 +1849,7 @@ class DiodeFitDialog(QDialog):
         QApplication.restoreOverrideCursor()
 
         self._window.iv_fit_results[result.curve_name] = result
+        self._window.parameters_tab.sync_samples()
         self._display_result(result)
         self._window.show_status(
             f"Ajuste de diodo de '{result.curve_name}' concluído "
@@ -1912,6 +1918,7 @@ class DiodeFitDialog(QDialog):
             results.append(result)
             self._window.iv_fit_results[result.curve_name] = result
         QApplication.restoreOverrideCursor()
+        self._window.parameters_tab.sync_samples()
 
         if not results:
             QMessageBox.warning(
@@ -4073,6 +4080,7 @@ class CircuitTab(QWidget):
         QApplication.restoreOverrideCursor()
 
         self._window.fit_results[name] = result
+        self._window.parameters_tab.sync_samples()
         self.canvas.clear()
         plot_circuit_fit(
             self.canvas.figure, result, self._window.plot_style()
@@ -4205,6 +4213,456 @@ class ComparisonTab(QWidget):
         self.canvas.draw()
 
 
+class ParametersTab(QWidget):
+    """Aba de gráficos dos parâmetros ajustados entre as amostras.
+
+    Plota os parâmetros extraídos dos ajustes (circuito equivalente ou
+    modelo de diodo) em função das amostras ou de uma **variável de
+    ensaio** informada pelo usuário — por padrão o *número de
+    pancadas* —, com as barras de erro vindas das incertezas do
+    próprio ajuste.
+    """
+
+    _SOURCES: tuple[tuple[str, str], ...] = (
+        ("Circuito equivalente", "circuito"),
+        ("Modelo de diodo (curva I-V)", "diodo"),
+    )
+    _KINDS: tuple[tuple[str, str], ...] = (
+        ("Linha com marcadores", "linha"),
+        ("Barras", "barra"),
+    )
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+
+        # -- Controles ----------------------------------------------------
+        self.source_combo = QComboBox(self)
+        for label, key in self._SOURCES:
+            self.source_combo.addItem(label, key)
+        self.source_combo.currentIndexChanged.connect(
+            self._on_source_changed
+        )
+
+        self.param_list = QListWidget(self)
+        self.param_list.setMaximumWidth(240)
+        self.param_list.itemChanged.connect(lambda _item: self.refresh())
+
+        self.variable_edit = QLineEdit("Número de pancadas", self)
+        self.variable_edit.setToolTip(
+            "Nome da variável de ensaio usada no eixo X (ex.: número "
+            "de pancadas, ciclos térmicos, horas de PID)."
+        )
+        self.variable_edit.editingFinished.connect(
+            self._on_variable_name_changed
+        )
+
+        self.variable_table = QTableWidget(0, 2, self)
+        self.variable_table.setHorizontalHeaderLabels(
+            ["Amostra", "Valor"]
+        )
+        self.variable_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.variable_table.verticalHeader().setVisible(False)
+        self.variable_table.setMaximumWidth(240)
+        self.variable_table.itemChanged.connect(self._on_value_edited)
+
+        self.xaxis_combo = QComboBox(self)
+        self.xaxis_combo.addItem("Variável de ensaio", "variavel")
+        self.xaxis_combo.addItem("Amostras (ordem)", "amostra")
+        self.xaxis_combo.currentIndexChanged.connect(
+            lambda _index: self.refresh()
+        )
+
+        self.kind_combo = QComboBox(self)
+        for label, key in self._KINDS:
+            self.kind_combo.addItem(label, key)
+        self.kind_combo.currentIndexChanged.connect(
+            lambda _index: self.refresh()
+        )
+
+        self.log_checkbox = QCheckBox("Eixo Y logarítmico", self)
+        self.log_checkbox.setToolTip(
+            "Recomendado para I₀ e Q, que variam ordens de grandeza."
+        )
+        self.log_checkbox.toggled.connect(lambda _on: self.refresh())
+
+        self.normalize_checkbox = QCheckBox(
+            "Normalizar (% da 1ª amostra)", self
+        )
+        self.normalize_checkbox.setToolTip(
+            "Expressa cada parâmetro em porcentagem do valor da "
+            "primeira amostra — permite comparar, no mesmo eixo, "
+            "parâmetros de unidades diferentes."
+        )
+        self.normalize_checkbox.toggled.connect(lambda _on: self.refresh())
+
+        self.export_image_button = QPushButton("Exportar imagem…", self)
+        self.export_image_button.clicked.connect(self._export_image)
+        self.export_table_button = QPushButton("Exportar tabela…", self)
+        self.export_table_button.clicked.connect(self._export_table)
+
+        self.status_label = QLabel("", self)
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #9a9a9a;")
+
+        self.canvas = PlotCanvas(self)
+
+        # -- Layout -------------------------------------------------------
+        side = QVBoxLayout()
+        side.addWidget(QLabel("Fonte dos parâmetros:", self))
+        side.addWidget(self.source_combo)
+        side.addWidget(QLabel("Parâmetros a plotar:", self))
+        side.addWidget(self.param_list, 1)
+        side.addWidget(QLabel("Nome da variável de ensaio:", self))
+        side.addWidget(self.variable_edit)
+        side.addWidget(QLabel("Valor por amostra:", self))
+        side.addWidget(self.variable_table, 1)
+        side_widget = QWidget(self)
+        side_widget.setLayout(side)
+        side_widget.setMaximumWidth(260)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Eixo X:", self))
+        top.addWidget(self.xaxis_combo)
+        top.addWidget(QLabel("Gráfico:", self))
+        top.addWidget(self.kind_combo)
+        top.addWidget(self.log_checkbox)
+        top.addWidget(self.normalize_checkbox)
+        top.addStretch(1)
+        top.addWidget(self.export_image_button)
+        top.addWidget(self.export_table_button)
+
+        right = QVBoxLayout()
+        right.addLayout(top)
+        right.addWidget(self.canvas, 1)
+        right.addWidget(self.status_label)
+
+        layout = QHBoxLayout(self)
+        layout.addWidget(side_widget)
+        layout.addLayout(right, 1)
+
+    # -- Coleta dos ajustes -------------------------------------------------
+    def _fits(self) -> dict[str, tuple[
+        tuple[str, ...], tuple[str, ...], np.ndarray, np.ndarray
+    ]]:
+        """Ajustes da fonte atual: ``{amostra: (nomes, unidades, v, e)}``.
+
+        Uniformiza os dois tipos de ajuste (circuito e diodo) em uma
+        estrutura só, o que permite tratá-los pelo mesmo caminho.
+        """
+        source = self.source_combo.currentData()
+        fits: dict[str, tuple] = {}
+        if source == "diodo":
+            for name, fit in self._window.iv_fit_results.items():
+                fits[name] = (
+                    IV_PARAM_NAMES,
+                    IV_PARAM_UNITS,
+                    np.asarray(fit.param_values, dtype=float),
+                    np.asarray(fit.param_errors, dtype=float),
+                )
+        else:
+            for name, fit in self._window.fit_results.items():
+                fits[name] = (
+                    tuple(fit.param_names),
+                    tuple(fit.param_units),
+                    np.asarray(fit.param_values, dtype=float),
+                    np.asarray(fit.param_errors, dtype=float),
+                )
+        # Ordem das amostras no dock (mantém a sequência do ensaio).
+        order = {
+            name: i for i, name in enumerate(self._window.sample_names())
+        }
+        return {
+            name: fits[name]
+            for name in sorted(fits, key=lambda n: order.get(n, 10**6))
+        }
+
+    def _on_source_changed(self, _index: int) -> None:
+        self.sync_samples()
+
+    # -- Sincronização ------------------------------------------------------
+    def sync_samples(self) -> None:
+        """Atualiza a lista de parâmetros e a tabela da variável."""
+        fits = self._fits()
+
+        # Parâmetros disponíveis (união, preservando a ordem de uso).
+        available: list[tuple[str, str]] = []
+        for names, units, _v, _e in fits.values():
+            for name, unit in zip(names, units):
+                if (name, unit) not in available:
+                    available.append((name, unit))
+
+        previous = {
+            self.param_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.param_list.count())
+            if self.param_list.item(i).checkState()
+            == Qt.CheckState.Checked
+        }
+        self.param_list.blockSignals(True)
+        try:
+            self.param_list.clear()
+            for name, unit in available:
+                text = f"{name} ({unit})" if unit else name
+                item = QListWidgetItem(text, self.param_list)
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                item.setFlags(
+                    item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                )
+                # Na primeira exibição, marca o primeiro parâmetro.
+                checked = (
+                    name in previous
+                    if previous
+                    else name == available[0][0]
+                )
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if checked
+                    else Qt.CheckState.Unchecked
+                )
+        finally:
+            self.param_list.blockSignals(False)
+
+        # Tabela da variável de ensaio (uma linha por amostra ajustada).
+        self.variable_table.blockSignals(True)
+        try:
+            self.variable_table.setRowCount(0)
+            for name in fits:
+                row = self.variable_table.rowCount()
+                self.variable_table.insertRow(row)
+                sample_item = QTableWidgetItem(name)
+                sample_item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsSelectable
+                )
+                self.variable_table.setItem(row, 0, sample_item)
+                value = self._window.sample_variables.get(name)
+                self.variable_table.setItem(
+                    row,
+                    1,
+                    QTableWidgetItem(
+                        "" if value is None else _CELL_FORMAT.format(value)
+                    ),
+                )
+        finally:
+            self.variable_table.blockSignals(False)
+
+        self.variable_edit.setText(self._window.sample_variable_name)
+        self.refresh()
+
+    def _on_variable_name_changed(self) -> None:
+        """Guarda o nome da variável de ensaio e redesenha."""
+        name = self.variable_edit.text().strip() or "Amostra"
+        self._window.sample_variable_name = name
+        self.refresh()
+
+    def _on_value_edited(self, item: QTableWidgetItem) -> None:
+        """Registra o valor da variável de ensaio de uma amostra."""
+        if item.column() != 1:
+            return
+        sample_item = self.variable_table.item(item.row(), 0)
+        if sample_item is None:
+            return
+        name = sample_item.text()
+        value = parse_number(item.text())
+        if value is None:
+            self._window.sample_variables.pop(name, None)
+        else:
+            self._window.sample_variables[name] = float(value)
+        self.refresh()
+
+    # -- Gráfico ------------------------------------------------------------
+    def _selected_parameters(self) -> list[str]:
+        """Nomes dos parâmetros marcados na lista."""
+        return [
+            self.param_list.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.param_list.count())
+            if self.param_list.item(i).checkState()
+            == Qt.CheckState.Checked
+        ]
+
+    def build_series(self) -> tuple[list[ParameterSeries], list[str]]:
+        """Monta as séries do gráfico e as mensagens de aviso."""
+        fits = self._fits()
+        selected = self._selected_parameters()
+        use_variable = self.xaxis_combo.currentData() == "variavel"
+        series: list[ParameterSeries] = []
+        warnings: list[str] = []
+
+        missing: list[str] = []
+        for param in selected:
+            labels: list[str] = []
+            values: list[float] = []
+            errors: list[float] = []
+            xs: list[float] = []
+            for name, (names, units, v, e) in fits.items():
+                if param not in names:
+                    continue
+                index = names.index(param)
+                x = self._window.sample_variables.get(name)
+                if use_variable and x is None:
+                    if name not in missing:
+                        missing.append(name)
+                    continue
+                labels.append(name)
+                values.append(float(v[index]))
+                errors.append(
+                    float(e[index]) if index < len(e) else float("nan")
+                )
+                xs.append(float(x) if x is not None else 0.0)
+            if not values:
+                continue
+            unit = ""
+            for names, units, _v, _e in fits.values():
+                if param in names:
+                    unit = units[names.index(param)]
+                    break
+            series.append(
+                ParameterSeries(
+                    name=param,
+                    unit=unit,
+                    labels=tuple(labels),
+                    values=np.asarray(values, dtype=float),
+                    errors=np.asarray(errors, dtype=float),
+                    x=np.asarray(xs, dtype=float) if use_variable else None,
+                )
+            )
+        if missing:
+            warnings.append(
+                "Sem valor da variável de ensaio (fora do gráfico): "
+                + ", ".join(missing)
+            )
+        return series, warnings
+
+    def refresh(self) -> None:
+        """Redesenha o gráfico de parâmetros."""
+        self.canvas.clear()
+        series, warnings = self.build_series()
+        if not series:
+            self.canvas.draw()
+            fits = self._fits()
+            if not fits:
+                self.status_label.setText(
+                    "Nenhum ajuste disponível nesta fonte. Ajuste ao "
+                    "menos uma amostra (aba Circuito Equivalente ou "
+                    "\"Ajustar modelo de diodo…\" na aba Curva I-V)."
+                )
+            else:
+                self.status_label.setText(
+                    "Marque ao menos um parâmetro na lista à esquerda."
+                    + (f"\n{warnings[0]}" if warnings else "")
+                )
+            return
+
+        use_variable = self.xaxis_combo.currentData() == "variavel"
+        x_label = (
+            self._window.sample_variable_name
+            if use_variable
+            else "Amostra"
+        )
+        try:
+            plot_parameter_series(
+                self.canvas.figure,
+                series,
+                self._window.plot_style(),
+                x_label=x_label,
+                log_y=self.log_checkbox.isChecked(),
+                normalize=self.normalize_checkbox.isChecked(),
+                kind=self.kind_combo.currentData(),
+            )
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            self.canvas.draw()
+            return
+        self.canvas.draw()
+        total = len(series[0].labels)
+        self.status_label.setText(
+            f"{len(series)} parâmetro(s) × {total} amostra(s)."
+            + ("  " + warnings[0] if warnings else "")
+        )
+
+    # -- Exportação ---------------------------------------------------------
+    def _export_image(self) -> None:
+        """Salva o gráfico atual como imagem."""
+        if not self.canvas.figure.axes:
+            QMessageBox.information(
+                self, "Exportar imagem", "Não há gráfico para exportar."
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar imagem do gráfico",
+            "parametros.png",
+            "Imagens (*.png *.svg *.pdf)",
+        )
+        if not path:
+            return
+        try:
+            exportacao.export_figure(self.canvas.figure, path)
+        except OSError as exc:
+            QMessageBox.critical(self, "Exportar imagem", str(exc))
+            return
+        self._window.show_status(f"Gráfico salvo em {path}.")
+
+    def _export_table(self) -> None:
+        """Salva a tabela parâmetro × amostra em CSV."""
+        series, _warnings = self.build_series()
+        if not series:
+            QMessageBox.information(
+                self, "Exportar tabela", "Não há dados para exportar."
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar tabela de parâmetros",
+            "parametros.csv",
+            "CSV (*.csv)",
+        )
+        if not path:
+            return
+
+        # Formato largo: uma linha por amostra, colunas valor e erro.
+        samples: list[str] = []
+        for item in series:
+            for label in item.labels:
+                if label not in samples:
+                    samples.append(label)
+        header = ["Amostra", self._window.sample_variable_name]
+        for item in series:
+            unit = f" ({item.unit})" if item.unit else ""
+            header += [f"{item.name}{unit}", f"erro {item.name}{unit}"]
+
+        lines = [";".join(header)]
+        for sample in samples:
+            row = [sample]
+            value = self._window.sample_variables.get(sample)
+            row.append("" if value is None else _decimal(value))
+            for item in series:
+                if sample in item.labels:
+                    index = item.labels.index(sample)
+                    row.append(_decimal(item.values[index]))
+                    row.append(_decimal(item.errors[index]))
+                else:
+                    row += ["", ""]
+            lines.append(";".join(row))
+        try:
+            Path(path).write_text(
+                "\n".join(lines) + "\n", encoding="utf-8-sig"
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "Exportar tabela", str(exc))
+            return
+        self._window.show_status(f"Tabela de parâmetros salva em {path}.")
+
+
+def _decimal(value: float) -> str:
+    """Número com vírgula decimal (padrão pt-BR) para o CSV."""
+    if value is None or not np.isfinite(value):
+        return ""
+    return f"{float(value):.6g}".replace(".", ",")
+
+
 # ---------------------------------------------------------------------------
 # Janela principal
 # ---------------------------------------------------------------------------
@@ -4231,6 +4689,10 @@ class MainWindow(QMainWindow):
         self.fit_results: dict[str, circuitos.FitResult] = {}
         #: Resultados de ajuste do modelo de diodo por curva I-V.
         self.iv_fit_results: dict[str, iv_model.IVFitResult] = {}
+        #: Nome da variável de ensaio usada no eixo X da aba Parâmetros.
+        self.sample_variable_name: str = "Número de pancadas"
+        #: Valor da variável de ensaio por amostra (``{amostra: valor}``).
+        self.sample_variables: dict[str, float] = {}
         #: Biblioteca de correções do instrumento (``{nome: correção}``).
         self.corrections: dict[str, InstrumentCorrection] = {}
         #: Janela de simulação do módulo FV (criada sob demanda).
@@ -4271,6 +4733,7 @@ class MainWindow(QMainWindow):
         self.kk_tab = KKTab(self)
         self.circuit_tab = CircuitTab(self)
         self.comparison_tab = ComparisonTab(self)
+        self.parameters_tab = ParametersTab(self)
         self.iv_tab = IVTab(self)
 
         self.tabs.addTab(self.data_panel, "Dados")
@@ -4281,6 +4744,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.kk_tab, "Kramers-Kronig")
         self.tabs.addTab(self.circuit_tab, "Circuito Equivalente")
         self.tabs.addTab(self.comparison_tab, "Comparação")
+        self.tabs.addTab(self.parameters_tab, "Parâmetros")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.setCentralWidget(self.tabs)
@@ -5169,6 +5633,10 @@ class MainWindow(QMainWindow):
             self.iv_fit_results[new_name] = iv_fit
         if old_name in self.curve_colors:
             self.curve_colors[new_name] = self.curve_colors.pop(old_name)
+        if old_name in self.sample_variables:
+            self.sample_variables[new_name] = self.sample_variables.pop(
+                old_name
+            )
         self.measurement_list.blockSignals(True)
         try:
             item.setText(new_name)
@@ -5240,6 +5708,7 @@ class MainWindow(QMainWindow):
             self.fit_results.pop(name, None)
             self.iv_fit_results.pop(name, None)
             self.curve_colors.pop(name, None)
+            self.sample_variables.pop(name, None)
         self.measurement_list.blockSignals(True)
         try:
             for item in items:
@@ -5333,6 +5802,7 @@ class MainWindow(QMainWindow):
             finally:
                 combo.blockSignals(False)
         self.comparison_tab.sync_measurements(names)
+        self.parameters_tab.sync_samples()
 
     # -- Gráficos --------------------------------------------------------
     def refresh_plots(self) -> None:
@@ -5586,6 +6056,8 @@ class MainWindow(QMainWindow):
             fit_results=dict(self.fit_results),
             iv_fit_results=dict(self.iv_fit_results),
             kk_results=dict(self.kk_results),
+            sample_variable_name=self.sample_variable_name,
+            sample_variables=dict(self.sample_variables),
         )
 
     def _save_project(self) -> None:
@@ -5668,6 +6140,7 @@ class MainWindow(QMainWindow):
         self.iv_fit_results.clear()
         self.kk_results.clear()
         self.curve_colors.clear()
+        self.sample_variables.clear()
         self.measurement_list.blockSignals(True)
         try:
             self.measurement_list.clear()
@@ -5684,6 +6157,8 @@ class MainWindow(QMainWindow):
         self.iv_fit_results.update(data.iv_fit_results)
         self.kk_results.update(data.kk_results)
         self.curve_colors.update(data.curve_colors)
+        self.sample_variable_name = data.sample_variable_name
+        self.sample_variables.update(data.sample_variables)
 
         ordered = list(data.samples)
         for name in list(data.measurements) + list(data.iv_curves):
