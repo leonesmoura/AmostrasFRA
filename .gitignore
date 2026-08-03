@@ -39,6 +39,9 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# PlatformIO (builds do firmware)
+firmware/**/.pio/
+
 # Documentacao do fabricante do kit AD5933 (nao redistribuir no repo)
 013KDT5933-013*/
 013KDT5933-013*.zip
