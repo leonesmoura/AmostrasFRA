@@ -20,6 +20,8 @@
  *   T  -> le a temperatura do chip
  *   C f0=<Hz> df=<Hz> n=<pts> vpp=<mV> pga=<1|5> st=<ciclos>
  *      -> configura a varredura (enviado pelo AmostrasFRA)
+ *   V  -> liga a excitacao continua na frequencia inicial (bancada)
+ *   P  -> desliga a excitacao
  *
  * Saida por ponto (formato rotulado que o AmostrasFRA ja aceita):
  *   f=<Hz> z'=<ohm> z''=<ohm>\n
@@ -54,15 +56,32 @@ static uint16_t N_PONTOS     = 100;      // pontos (<=512)
 
 enum { SAIDA_2V=0x0000, SAIDA_200mV=0x0200, SAIDA_400mV=0x0400, SAIDA_1V=0x0600 };
 enum { PGA_x5=0x0000, PGA_x1=0x0100 };
-static uint16_t FAIXA_SAIDA = SAIDA_1V;
+// SAIDA_2V (1,98 Vpp, bias DC 1,48 V) e' a faixa com menor degrau DC
+// contra o terra virtual VDD/2 = 1,65 V do VIN, impedancia de saida de
+// 200 ohm e +-5,8 mA de acionamento. E' a faixa usada nos exemplos do
+// fabricante (AD5933.c, DA5933_Get_Rs). As faixas menores tem bias DC
+// mais baixo e forcam corrente continua pelo DUT.
+static uint16_t FAIXA_SAIDA = SAIDA_2V;
 static uint16_t GANHO_PGA   = PGA_x1;
 static uint16_t CICLOS_ACOMODACAO = 100;
 
+// Frequencia minima util: a DFT integra 1024 amostras a MCLK/16, ou
+// seja uma janela fixa de 1024*16/MCLK segundos (0,98 ms com o clock
+// interno). Abaixo de MCLK/16384 nem um ciclo completo cabe na janela
+// e o par real/imag deixa de ser uma medida de impedancia. Bate com a
+// faixa de 1 kHz a 100 kHz especificada no datasheet.
+static double freqMinimaDft() { return AD5933_MCLK_HZ / 16384.0; }
+
 // --- Calibracao (fase 3) ---
 #define MODO_CALIBRACAO 0
-static const double R_CALIBRACAO = 1000.0;
-static const double GAIN_FACTOR  = 1.0;
-static const double FASE_SISTEMA = 0.0;
+// ATENCAO: R_CALIBRACAO tem que ser o valor REAL do padrao usado e tem
+// que estar dentro da janela que o resistor de transimpedancia da placa
+// (R9, 200 kohm de fabrica) permite: na pratica 220 kohm a 1 Mohm. Um
+// padrao de 1 kohm satura o estagio I-V e produz um gain factor invalido
+// — para medir a decada de 1 kohm e' preciso trocar R9 por ~1 kohm.
+static const double R_CALIBRACAO = 220000.0;
+static const double GAIN_FACTOR  = 1.0;   // placeholder: calibrar (fase 3)
+static const double FASE_SISTEMA = 0.0;   // placeholder: calibrar (fase 3)
 
 // Convencao de sinal de Z'' do AmostrasFRA (Z'' < 0 p/ capacitivo).
 static const bool INVERTER_SINAL_ZII = false;
@@ -186,6 +205,25 @@ static void converteImpedancia(int16_t re, int16_t im,
 }
 
 static void executaVarredura() {
+#if !MODO_CALIBRACAO
+  // Sem calibracao o gain factor e' o placeholder 1.0 e |Z| = 1/mag sai
+  // ~5e6 vezes menor que o valor real (0,0002 ohm para 1 kohm). Melhor
+  // recusar do que emitir numeros com cara de medida valida. O gain
+  // factor fisico fica na ordem de 1e-9; qualquer valor acima de 1e-4
+  // e' placeholder ou erro de digitacao.
+  if (GAIN_FACTOR > 1e-4) {
+    Serial.println("# ERRO: firmware nao calibrado (GAIN_FACTOR placeholder).");
+    Serial.println("#       Rode com MODO_CALIBRACAO 1 e preencha GAIN_FACTOR/FASE_SISTEMA.");
+    telas::erro("Nao calibrado - ver fase 3");
+    return;
+  }
+#endif
+  if (F_INICIAL < freqMinimaDft()) {
+    Serial.print("# AVISO: f0 abaixo do minimo da DFT (");
+    Serial.print(freqMinimaDft(), 1);
+    Serial.println(" Hz) - pontos baixos sem validade.");
+  }
+
   configuraSweep();
   telas::iniciaVarredura(N_PONTOS, vppMv());
 
@@ -200,6 +238,15 @@ static void executaVarredura() {
 
   while (true) {
     // Espera o DFT concluir (bit 1 do status); BTN1 cancela.
+    // O chip so' amostra depois de CICLOS_ACOMODACAO ciclos DA EXCITACAO,
+    // isto e' CICLOS_ACOMODACAO/f segundos — 100 ms a 1 kHz, mas 10 s a
+    // 10 Hz. Um limite fixo abortaria toda frequencia abaixo de ~100 Hz,
+    // por isso ele e' recalculado a cada ponto (o multiplicador D10-D9 do
+    // reg. 0x8A esta' em x1; se passar a usa-lo, multiplicar aqui tambem).
+    const double tDftMs = 1000.0 * 16384.0 / AD5933_MCLK_HZ;   // ~0,98 ms
+    const double fEspera = (f > 0.0) ? f : 1.0;
+    const uint32_t limiteMs =
+        (uint32_t)(2.0 * (1000.0 * CICLOS_ACOMODACAO / fEspera + tDftMs)) + 250;
     uint32_t t0 = millis();
     while (!(leReg(REG_STATUS) & 0x02)) {
       if (botaoPressionado(BTN1_PIN)) {
@@ -208,8 +255,12 @@ static void executaVarredura() {
         telas::erro("Cancelada (BTN1)");
         return;
       }
-      if (millis() - t0 > 1000) {
-        Serial.println("# ERRO: timeout DFT");
+      if (millis() - t0 > limiteMs) {
+        Serial.print("# ERRO: timeout DFT em f=");
+        Serial.print(f, 2);
+        Serial.print(" Hz (limite ");
+        Serial.print(limiteMs);
+        Serial.println(" ms)");
         telas::erro("ERRO: timeout DFT");
         return;
       }
@@ -267,6 +318,28 @@ static void leTemperatura() {
   telas::estado(chipOk, tempC);
 }
 
+// Liga o VOUT na frequencia inicial e DEIXA ligado, para conferir os
+// terminais do DUT com osciloscopio. Fora de uma varredura o AD5933 fica
+// em power-down, entao medir "em repouso" da' 0 V — o que ja' confundiu
+// mais de um teste de bancada.
+static void ligaExcitacao() {
+  configuraSweep();
+  escreveReg(REG_CTRL_HI, ctrlHi(CMD_INIT));
+  Serial.print("# Excitacao LIGADA em ");
+  Serial.print(F_INICIAL, 2);
+  Serial.print(" Hz, ");
+  Serial.print(vppMv());
+  Serial.println(" mVpp. Envie 'P' para desligar.");
+  Serial.println("#   Multimetro comum nao le seno de 1 kHz+; use osciloscopio.");
+  telas::excitacao(F_INICIAL, vppMv());
+}
+
+static void desligaExcitacao() {
+  escreveReg(REG_CTRL_HI, ctrlHi(CMD_PDOWN));
+  Serial.println("# Excitacao DESLIGADA.");
+  mostraEstado();
+}
+
 // Interpreta "C f0=100 df=400.5 n=100 vpp=1000 pga=1 st=100".
 static void processaComando(const String &linha) {
   double f0 = F_INICIAL, df = F_INCREMENTO;
@@ -291,7 +364,19 @@ static void processaComando(const String &linha) {
     pos = fim + 1;
   }
 
-  if (f0 > 0)               F_INICIAL    = f0;
+  // A tolerancia de 5% aceita os 1000 Hz nominais do datasheet, que ficam
+  // pouco abaixo do limite exato (1023,9 Hz com o clock interno). Quando o
+  // clock externo entrar (fase 4), basta ajustar AD5933_MCLK_HZ que o
+  // limite acompanha sozinho.
+  if (f0 >= 0.95 * freqMinimaDft()) {
+    F_INICIAL = f0;
+  } else if (f0 > 0) {
+    Serial.print("# ERRO: f0=");
+    Serial.print(f0, 1);
+    Serial.print(" Hz abaixo do minimo da DFT (");
+    Serial.print(freqMinimaDft(), 1);
+    Serial.println(" Hz). Exige clock externo mais lento no SMA P5; f0 mantido.");
+  }
   if (df > 0)               F_INCREMENTO = df;
   if (n >= 2 && n <= 512)   N_PONTOS     = (uint16_t)n;
   if (st >= 1 && st <= 511) CICLOS_ACOMODACAO = (uint16_t)st;
@@ -343,6 +428,8 @@ void loop() {
       if (c == 'S' || c == 's') executaVarredura();
       else if (c == 'T' || c == 't') leTemperatura();
       else if (c == 'C' || c == 'c') processaComando(linha);
+      else if (c == 'V' || c == 'v') ligaExcitacao();
+      else if (c == 'P' || c == 'p') desligaExcitacao();
     }
   }
 

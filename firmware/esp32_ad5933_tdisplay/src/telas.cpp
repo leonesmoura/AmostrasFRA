@@ -1,12 +1,14 @@
 /*
  * AMOSTRAS FRA 2.0 - Implementacao das telas (ST7735 80x160, paisagem)
  * ====================================================================
+ * Fontes: texto corrido em font 1 (6x8 px) para caber sem sobreposicao;
+ * font 2 (16 px) so em titulos; |Z| em destaque na font 4 (26 px).
  * Layout da tela de varredura (160x80):
- *   y  0..15  cabecalho: ponto i/N e frequencia atual
- *   y 17..43  |Z| em fonte grande (destaque)
- *   y 44..59  fase (graus) e corrente estimada
- *   y 61..70  sparkline de |Z| (historico da varredura)
- *   y 73..79  barra de progresso
+ *   y  0..7   cabecalho: ponto i/N e frequencia atual (font 1)
+ *   y 11..37  |Z| em fonte grande (font 4)
+ *   y 41..48  fase (graus) e corrente estimada (font 1)
+ *   y 52..64  sparkline de |Z| (historico da varredura)
+ *   y 72..79  barra de progresso
  */
 #include "telas.h"
 
@@ -74,9 +76,9 @@ void inicia() {
   // Tela de abertura.
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COR_TITULO, TFT_BLACK);
-  tft.drawString("AMOSTRAS FRA", 80, 26, 4);
+  tft.drawString("AMOSTRAS FRA", 80, 30, 2);
   tft.setTextColor(COR_FRACO, TFT_BLACK);
-  tft.drawString("AD5933 - EIS ao vivo", 80, 52, 2);
+  tft.drawString("AD5933 - EIS ao vivo", 80, 52, 1);
 }
 
 void alternaBrilho() {
@@ -95,18 +97,18 @@ void estado(bool chipOk, double tempC) {
   if (chipOk) {
     tft.setTextColor(COR_OK, TFT_BLACK);
     snprintf(linha, sizeof(linha), "AD5933 OK  %.1f C", tempC);
-    tft.drawString(linha, 4, 22, 2);
+    tft.drawString(linha, 4, 24, 1);
   } else {
     tft.setTextColor(COR_ERRO, TFT_BLACK);
-    tft.drawString("AD5933 NAO detectado!", 4, 22, 2);
+    tft.drawString("AD5933 NAO detectado!", 4, 24, 1);
     tft.setTextColor(COR_FRACO, TFT_BLACK);
-    tft.drawString("Confira SDA21 SCL22 GND 5V", 4, 38, 2);
+    tft.drawString("Confira SDA21 SCL22 GND 5V", 4, 36, 1);
   }
 
   tft.setTextColor(COR_FRACO, TFT_BLACK);
-  tft.drawString("PC: 115200 baud (COM)", 4, 48, 2);
+  tft.drawString("PC: 115200 baud (COM)", 4, 52, 1);
   tft.setTextColor(COR_TEXTO, TFT_BLACK);
-  tft.drawString("BTN1 varrer  BTN2 brilho", 4, 64, 2);
+  tft.drawString("BTN1 varrer  BTN2 brilho", 4, 66, 1);
 }
 
 void configuracao(double f0, double f1, uint16_t n,
@@ -122,14 +124,14 @@ void configuracao(double f0, double f1, uint16_t n,
   fmtFreq(f1, b, sizeof(b));
   tft.setTextColor(COR_TEXTO, TFT_BLACK);
   snprintf(linha, sizeof(linha), "%s -> %s", a, b);
-  tft.drawString(linha, 4, 20, 2);
+  tft.drawString(linha, 4, 24, 1);
   snprintf(linha, sizeof(linha), "n=%u  acomod=%u", n, settle);
-  tft.drawString(linha, 4, 36, 2);
+  tft.drawString(linha, 4, 36, 1);
   snprintf(linha, sizeof(linha), "%d mVpp  PGA x%d", vppMv, pga);
-  tft.drawString(linha, 4, 52, 2);
+  tft.drawString(linha, 4, 48, 1);
 
   tft.setTextColor(COR_FRACO, TFT_BLACK);
-  tft.drawString("aguardando 'S' ou BTN1...", 4, 66, 2);
+  tft.drawString("aguardando 'S' ou BTN1...", 4, 66, 1);
 }
 
 void iniciaVarredura(uint16_t nPontos, int vppMv) {
@@ -137,7 +139,7 @@ void iniciaVarredura(uint16_t nPontos, int vppMv) {
   nTotal = (nPontos > 512) ? 512 : nPontos;
   vppConfigMv = vppMv;
   tft.fillScreen(TFT_BLACK);
-  tft.drawRect(0, 73, 160, 7, COR_FRACO);   // moldura do progresso
+  tft.drawRect(0, 72, 160, 8, COR_FRACO);   // moldura do progresso
 }
 
 void ponto(uint16_t i, uint16_t n, double f,
@@ -151,13 +153,13 @@ void ponto(uint16_t i, uint16_t n, double f,
   snprintf(linha, sizeof(linha), "%3u/%-3u  %s", i + 1, n, freqTxt);
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(COR_TEXTO, TFT_BLACK);
-  tft.setTextPadding(160);
-  tft.drawString(linha, 2, 0, 2);
+  tft.setTextPadding(158);
+  tft.drawString(linha, 2, 0, 1);
 
   // |Z| em destaque.
   fmtZ(zmod, zTxt, sizeof(zTxt));
   tft.setTextColor(COR_TITULO, TFT_BLACK);
-  tft.drawString(zTxt, 2, 17, 4);
+  tft.drawString(zTxt, 2, 11, 4);
 
   // Fase e corrente estimada (Ipp = Vpp/|Z|; rotulo "est").
   double iEst = (zmod > 0) ? (vppConfigMv / 1000.0) / zmod : 0.0;
@@ -165,11 +167,11 @@ void ponto(uint16_t i, uint16_t n, double f,
   snprintf(linha, sizeof(linha), "fase %+.1f  I est %s",
            faseGraus, iTxt);
   tft.setTextColor(COR_FASE, TFT_BLACK);
-  tft.drawString(linha, 2, 45, 2);
+  tft.drawString(linha, 2, 41, 1);
   tft.setTextPadding(0);
 
   // Sparkline de |Z| (min..max do historico).
-  tft.fillRect(0, 61, 160, 10, TFT_BLACK);
+  tft.fillRect(0, 52, 160, 13, TFT_BLACK);
   if (nHistorico >= 2) {
     float zMin = historico[0], zMax = historico[0];
     for (uint16_t k = 1; k < nHistorico; k++) {
@@ -179,32 +181,33 @@ void ponto(uint16_t i, uint16_t n, double f,
     float faixa = (zMax > zMin) ? (zMax - zMin) : 1.0f;
     for (uint16_t k = 0; k < nHistorico; k++) {
       int x = (int)((uint32_t)k * 159 / (nTotal > 1 ? nTotal - 1 : 1));
-      int y = 70 - (int)((historico[k] - zMin) / faixa * 9.0f);
+      int y = 64 - (int)((historico[k] - zMin) / faixa * 12.0f);
       tft.drawPixel(x, y, COR_SPARK);
     }
   }
 
   // Barra de progresso.
   int larg = (int)((uint32_t)(i + 1) * 156 / (n ? n : 1));
-  tft.fillRect(2, 75, larg, 3, COR_BARRA);
+  tft.fillRect(2, 74, larg, 4, COR_BARRA);
 }
 
 void fimVarredura(uint16_t n, double zMin, double zMax) {
   char a[24], b[24], linha[56];
-  tft.fillRect(0, 0, 160, 60, TFT_BLACK);
+  // Mantem o sparkline (y 52..64) e a barra; limpa so o texto acima.
+  tft.fillRect(0, 0, 160, 51, TFT_BLACK);
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(COR_OK, TFT_BLACK);
-  tft.drawString("Varredura concluida", 2, 0, 2);
+  tft.drawString("Varredura concluida", 2, 1, 2);
 
   fmtZ(zMin, a, sizeof(a));
   fmtZ(zMax, b, sizeof(b));
   tft.setTextColor(COR_TEXTO, TFT_BLACK);
   snprintf(linha, sizeof(linha), "%u pontos enviados", n);
-  tft.drawString(linha, 2, 18, 2);
+  tft.drawString(linha, 2, 22, 1);
   snprintf(linha, sizeof(linha), "|Z| %s a %s", a, b);
-  tft.drawString(linha, 2, 34, 2);
+  tft.drawString(linha, 2, 32, 1);
   tft.setTextColor(COR_FRACO, TFT_BLACK);
-  tft.drawString("BTN1: nova varredura", 2, 50, 2);
+  tft.drawString("BTN1: nova varredura", 2, 42, 1);
 }
 
 void calibracao(double gainFactor, double faseSistema) {
@@ -215,18 +218,37 @@ void calibracao(double gainFactor, double faseSistema) {
   char linha[52];
   tft.setTextColor(COR_TEXTO, TFT_BLACK);
   snprintf(linha, sizeof(linha), "GF %.4e", gainFactor);
-  tft.drawString(linha, 4, 24, 2);
+  tft.drawString(linha, 4, 26, 1);
   snprintf(linha, sizeof(linha), "fase sist %.4f rad", faseSistema);
-  tft.drawString(linha, 4, 40, 2);
+  tft.drawString(linha, 4, 38, 1);
   tft.setTextColor(COR_FRACO, TFT_BLACK);
-  tft.drawString("anote no monitor serial", 4, 60, 2);
+  tft.drawString("anote no monitor serial", 4, 58, 1);
+}
+
+void excitacao(double f, int vppMv) {
+  vppConfigMv = vppMv;
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(COR_FASE, TFT_BLACK);
+  tft.drawString("EXCITACAO LIGADA", 4, 2, 2);
+
+  char freqTxt[24], linha[52];
+  fmtFreq(f, freqTxt, sizeof(freqTxt));
+  tft.setTextColor(COR_TITULO, TFT_BLACK);
+  tft.drawString(freqTxt, 4, 24, 4);
+
+  tft.setTextColor(COR_TEXTO, TFT_BLACK);
+  snprintf(linha, sizeof(linha), "%d mVpp no VOUT", vppMv);
+  tft.drawString(linha, 4, 54, 1);
+  tft.setTextColor(COR_FRACO, TFT_BLACK);
+  tft.drawString("meca no DUT - 'P' desliga", 4, 66, 1);
 }
 
 void erro(const char *mensagem) {
-  tft.fillRect(0, 0, 160, 18, COR_ERRO);
+  tft.fillRect(0, 0, 160, 12, COR_ERRO);
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_WHITE, COR_ERRO);
-  tft.drawString(mensagem, 2, 1, 2);
+  tft.drawString(mensagem, 2, 2, 1);
 }
 
 }  // namespace telas

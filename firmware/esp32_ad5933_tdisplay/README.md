@@ -62,17 +62,77 @@ Porta padrão: **COM22** (ajuste `upload_port`/`monitor_port` no
 - `T` — temperatura do chip;
 - `C f0=<Hz> df=<Hz> n=<pts> vpp=<mV> pga=<1|5> st=<ciclos>` —
   configuração enviada pela janela "Conexão Serial → AD5933" do
-  AmostrasFRA (responde `# CFG ok: ...`).
+  AmostrasFRA (responde `# CFG ok: ...`);
+- `V` — liga a excitação **contínua** na frequência inicial e deixa
+  ligada, para conferir os terminais do DUT no osciloscópio;
+- `P` — desliga a excitação.
+
+Linhas iniciadas por `#` são mensagens de diagnóstico e o parser do
+AmostrasFRA as ignora.
+
+## Limites reais da placa (medidos no esquemático e no datasheet)
+
+Três limites explicam quase todo problema de bancada. Vale ler antes de
+suspeitar do firmware.
+
+**1. Frequência mínima ≈ 1 kHz com o clock interno.** A DFT integra 1024
+amostras a MCLK/16, ou seja uma janela **fixa** de 0,98 ms. Abaixo de
+MCLK/16384 = 1023,9 Hz não cabe nem um ciclo da excitação na janela e o
+par real/imaginário deixa de ser uma medida. Pedir 10 Hz não dá erro de
+conta: dá dado sem sentido — por isso o firmware **recusa** `f0` abaixo
+desse limite e avisa. Para descer de verdade, injete um clock mais lento
+no SMA **P5** (≈164 kHz para chegar a 10 Hz), ajuste `AD5933_MCLK_HZ` e
+`USAR_CLOCK_EXTERNO` em `src/main.cpp` — o limite acompanha sozinho.
+
+**2. Tempo por ponto cresce com 1/f.** A acomodação é contada em
+**ciclos da excitação**: 100 ciclos são 100 ms a 1 kHz, mas 10 s a 10 Hz.
+O timeout do firmware é calculado ponto a ponto a partir de `f` e de
+`CICLOS_ACOMODACAO` — não o troque por um valor fixo. Em frequências
+muito baixas, reduza a "Acomodação" na janela do AmostrasFRA.
+
+**3. Faixa de impedância: ~150 kΩ a 10 MΩ como a placa vem de fábrica.**
+O resistor de realimentação do amplificador de transimpedância é **R9 =
+200 kΩ** (0603, entre os pinos 4/RFB e 5/VIN do AD5933) — o próprio
+fabricante documenta que ele é para o usuário trocar. Com 200 kΩ, um DUT
+de **1 kΩ satura o estágio I-V** e nenhuma calibração recupera o valor.
+Para medir a década de 1 kΩ, troque R9 por 1 kΩ–1,5 kΩ (a janela útil
+passa a ~0,5–10 kΩ e a placa deixa de medir alta impedância). Calibre
+sempre com um padrão **dentro** da janela do R9 instalado — é o que
+`R_CALIBRACAO` em `src/main.cpp` espera.
+
+## Jumpers P2 e P7 — sem eles o DUT fica desligado
+
+No esquemático **não existe cobre** entre o VOUT do AD5933 e o borne do
+DUT: o caminho passa obrigatoriamente por dois headers 2x2.
+
+| Caminho | Jumpers | Uso |
+|---------|---------|-----|
+| Direto | P2 pinos 1-2 **e** P7 pinos 1-2 | 1 kΩ – 10 MΩ (padrão) |
+| Amplificado (AD820) | P2 pinos 3-4 **e** P7 pinos 3-4 | abaixo de 1 kΩ |
+
+Os dois headers têm que estar no **mesmo par**. Jumper faltando, ou um
+em cada fileira, deixa o terminal do DUT flutuando — e o multímetro lê
+0 V em qualquer situação. O DUT vai entre **P6.1** (excitação, mesmo nó
+do SMA P4) e **P6.2** (entrada de corrente, que vai a VIN); ligar o DUT
+contra o GND não produz leitura válida.
+
+Em repouso o VOUT fica **desligado** (power-down), então medir fora de
+uma varredura dá 0 V mesmo com tudo certo — use o comando `V` para
+energizar e medir com calma.
 
 ## Calibração (fase 3 do plano)
 
+Enquanto `GAIN_FACTOR` estiver no valor de fábrica (1.0), o firmware
+**recusa** varrer e avisa "não calibrado" — sem isso ele emitiria ohms
+errados por um fator de ~5 milhões, com toda a cara de medida válida.
+
 1. Defina `MODO_CALIBRACAO 1` em `src/main.cpp` e ligue um resistor
-   conhecido (`R_CALIBRACAO`, padrão 1 kΩ) no lugar do DUT;
-2. Grave, rode uma varredura e anote `GAIN_FACTOR` e `FASE_SISTEMA`
-   impressos no monitor serial (o display também mostra);
+   conhecido no lugar do DUT, **dentro da janela do R9 instalado**
+   (220 kΩ a 1 MΩ com o R9 de fábrica); ajuste `R_CALIBRACAO` para o
+   valor real desse resistor;
+2. Grave, rode uma varredura **na mesma faixa de frequência, Vpp e PGA
+   que serão usados na medida** — o gain factor depende dos três — e
+   anote `GAIN_FACTOR` e `FASE_SISTEMA` impressos no monitor serial (o
+   display também mostra);
 3. Volte `MODO_CALIBRACAO 0`, cole os dois valores nas constantes e
    regrave.
-
-O clock interno (16,776 MHz) cobre ~1–100 kHz. Para <1 kHz será
-injetado clock externo no SMA P5 (fase 4 do plano — `AD5933_MCLK_HZ` e
-`USAR_CLOCK_EXTERNO`).

@@ -40,6 +40,10 @@ void fimVarredura(uint16_t n, double zMin, double zMax);
 // Tela do modo calibracao (gain factor e fase do sistema).
 void calibracao(double gainFactor, double faseSistema);
 
+// Tela do modo excitacao continua (comando "V"): o VOUT fica ligado
+// numa frequencia fixa para conferir os terminais do DUT no osciloscopio.
+void excitacao(double f, int vppMv);
+
 // Mensagem de erro em destaque.
 void erro(const char *mensagem);
 
