@@ -104,15 +104,30 @@ static const double R_CALIBRACAO = 147.6;   // padrao usado na ultima calibracao
 // Verificacao sobre os proprios padroes: 332,47 ohm (alvo 332,5) e
 // 147,57 ohm (alvo 147,6). REFAZER se trocar R9, faixa de saida, PGA ou
 // clock — os coeficientes valem so' para essa combinacao.
+// DUAS SUBFAIXAS. O alvo (150 ohm a 15 kohm) e' uma razao de 100x, demais
+// para uma escala so': no topo, com PGA x1, sobram ~300 contagens de 20200
+// e o ruido domina. Por isso ha um jogo de coeficientes por ganho do PGA:
+//   x1 -> 150 ohm a ~15 kohm   (padroes de 147,6 e 332,5 ohm)
+//   x5 -> 1,3 kohm a ~75 kohm  (padrao de 21,92 kohm)
+// A x5 precisou de um padrao so' porque o ROUT e' do chip e ja' estava
+// determinado pela x1 — ele nao depende do PGA. Ganho efetivo medido do
+// PGA: 4,858 (o nominal e' 5).
 static const bool   CALIBRADO = true;
 static const double F_CAL_MIN = 2000.0;
 static const double F_CAL_MAX = 100000.0;
-static const double K_A      = -1.297152392695e-05;
-static const double K_B      = -8.669915510008e-02;
-static const double K_C      =  4.683947170245e+06;
-static const double ROUT_OHM =  230.3248;
-static const double FASE_A   =  1.114138937902e-05;
-static const double FASE_B   =  1.571832821289e+00;
+static const double ROUT_OHM  =  230.3248;
+// PGA x1 — residuo 0,13 % em |Z| e 0,23 grau em fase.
+static const double K1_A      = -1.297152392695e-05;
+static const double K1_B      = -8.669915510008e-02;
+static const double K1_C      =  4.683947170245e+06;
+static const double FASE1_A   =  1.114138937902e-05;
+static const double FASE1_B   =  1.571832821289e+00;
+// PGA x5 — residuo 0,29 % em |Z| e 1,7 graus em fase (sinal mais fraco).
+static const double K5_A      = -1.690647135774e-04;
+static const double K5_B      =  6.767157599982e+00;
+static const double K5_C      =  2.269985074007e+07;
+static const double FASE5_A   =  1.303983672756e-05;
+static const double FASE5_B   =  1.551299417715e+00;
 
 // Fora da banda calibrada os polinomios viram extrapolacao: o argumento e'
 // limitado a [F_CAL_MIN, F_CAL_MAX] para nao divergir e a varredura avisa.
@@ -124,11 +139,14 @@ static double fCalibravel(double f) {
 
 static double ganhoEm(double f) {
   const double x = fCalibravel(f);
-  return (K_A * x + K_B) * x + K_C;
+  if (GANHO_PGA == PGA_x5) return (K5_A * x + K5_B) * x + K5_C;
+  return (K1_A * x + K1_B) * x + K1_C;
 }
 
 static double faseSistemaEm(double f) {
-  return FASE_A * fCalibravel(f) + FASE_B;
+  const double x = fCalibravel(f);
+  return (GANHO_PGA == PGA_x5) ? (FASE5_A * x + FASE5_B)
+                               : (FASE1_A * x + FASE1_B);
 }
 
 // Convencao de sinal de Z'' do AmostrasFRA (Z'' < 0 p/ capacitivo).

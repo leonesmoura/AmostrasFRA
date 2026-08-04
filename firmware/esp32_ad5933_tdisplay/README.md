@@ -90,15 +90,24 @@ O timeout do firmware é calculado ponto a ponto a partir de `f` e de
 `CICLOS_ACOMODACAO` — não o troque por um valor fixo. Em frequências
 muito baixas, reduza a "Acomodação" na janela do AmostrasFRA.
 
-**3. Faixa de impedância: ~150 kΩ a 10 MΩ como a placa vem de fábrica.**
-O resistor de realimentação do amplificador de transimpedância é **R9 =
-200 kΩ** (0603, entre os pinos 4/RFB e 5/VIN do AD5933) — o próprio
-fabricante documenta que ele é para o usuário trocar. Com 200 kΩ, um DUT
-de **1 kΩ satura o estágio I-V** e nenhuma calibração recupera o valor.
-Para medir a década de 1 kΩ, troque R9 por 1 kΩ–1,5 kΩ (a janela útil
-passa a ~0,5–10 kΩ e a placa deixa de medir alta impedância). Calibre
-sempre com um padrão **dentro** da janela do R9 instalado — é o que
-`R_CALIBRACAO` em `src/main.cpp` espera.
+**3. A faixa de impedância é definida pelo R9, e esta placa foi
+modificada.** O resistor de realimentação do amplificador de
+transimpedância é o **R9** (0603, entre os pinos 4/RFB e 5/VIN do
+AD5933) — o próprio fabricante documenta que ele é para o usuário trocar,
+e o datasheet publica uma faixa por década (Fig. 26 a 31): RFB de 100 Ω
+para 100 Ω–1 kΩ, 1 kΩ para 1–10 kΩ, 10 kΩ para 10–100 kΩ, e assim por
+diante.
+
+De fábrica o R9 é de **200 kΩ**, o que põe a placa na década de
+100 kΩ–1 MΩ: qualquer DUT abaixo de ~98 kΩ satura o estágio I-V e lê
+sempre o mesmo valor, sem aviso. Esta placa recebeu um **330 Ω soldado em
+paralelo** com o R9 original (330 ∥ 200,4 k = 329,5 Ω; o de 200 k
+contribui com 0,17 %, absorvido pela calibração), o que a levou para a
+faixa de **150 Ω a 15 kΩ**. Soldar em paralelo evita retrabalhar um 0603
+encostado nos pinos do AD5933, onde o risco é levantar a ilha.
+
+Se precisar de outra faixa, o critério é `RFB ≈ Z_min` da década desejada,
+e **toda troca exige recalibrar**.
 
 ## Jumpers P2 e P7 — sem eles o DUT fica desligado
 
@@ -122,19 +131,38 @@ energizar e medir com calma.
 
 ## Calibração (fase 3 do plano)
 
-**Já calibrado** (04/08/2026, padrão de 220 kΩ, 2–100 kHz, 2 Vpp, PGA ×1,
-clock interno). Verificação com o próprio padrão: |Z| médio **220.056 Ω**
-(+0,03 %), erro rms 0,17 %, fase média **+0,03°** (rms 0,21°). Enquanto
-`CALIBRADO` for `false` o firmware **recusa** varrer, em vez de emitir
-ohms errados por ordens de grandeza com cara de medida válida.
+**Já calibrado** (04/08/2026, com o R9 modificado — ver abaixo). Duas
+subfaixas, selecionadas automaticamente pelo PGA que o host pedir:
 
-A calibração usa **polinômios em frequência**, não constantes: a fase do
-sistema anda de 89,5° a 160,8° na banda (atraso de ~1,96 µs do caminho
-analógico mais a DFT). Um valor único daria ±36° de erro de fase, o que
-destrói qualquer diagrama de Nyquist. `GF(f)` é quadrático e `FASE(f)`
-linear — é a calibração multiponto que o datasheet recomenda para
-varreduras largas. **Refaça a calibração se trocar R9, a faixa de saída,
-o PGA ou o clock**, porque os coeficientes dependem dos quatro.
+| Subfaixa | Padrões usados | Cobertura | Verificação |
+|----------|----------------|-----------|-------------|
+| PGA ×1 | 147,6 Ω e 332,5 Ω | 150 Ω – 15 kΩ | 147,608 Ω (+0,01 %), rms 0,28 %, fase +0,66° |
+| PGA ×5 | 21,92 kΩ | 1,3 kΩ – 75 kΩ | 21.925 Ω (+0,02 %), rms 0,30 %, fase +0,01° |
+
+Enquanto `CALIBRADO` for `false` o firmware **recusa** varrer, em vez de
+emitir ohms errados por ordens de grandeza com cara de medida válida.
+
+Dois pontos do modelo merecem atenção, porque são o que separa uma
+medida correta de uma apenas plausível:
+
+**A resistência de saída do chip entra em série com a amostra.** O que a
+magnitude bruta mede é `K(f)/(ROUT + |Z|)`, não `1/|Z|`. Em 220 kΩ o ROUT
+pesa 0,09 % e some no ruído; em 150 Ω ele é *maior que a própria amostra*.
+Por isso a subfaixa ×1 foi calibrada com **dois** padrões, resolvendo o
+ROUT explicitamente: deu **230,3 Ω**, com desvio de 0,5 Ω em 99
+frequências. O datasheet dá 200 Ω como *típico* — usar o valor de catálogo
+teria introduzido 20 % de erro num DUT de 147 Ω. A subtração do ROUT é
+**complexa** e feita depois da rotação de fase. A subfaixa ×5 precisou de
+um padrão só, porque o ROUT é do chip e não depende do PGA.
+
+**A fase do sistema não é constante.** Ela varre de 89° a 153° na banda —
+um atraso de 1,77 µs (2,08 µs em ×5). Um valor único daria dezenas de
+graus de erro, o que destrói qualquer diagrama de Nyquist. Por isso
+`K(f)` é quadrático e `FASE(f)` linear, que é a calibração multiponto
+recomendada pelo datasheet para varreduras largas.
+
+**Refaça a calibração se trocar R9, a faixa de saída ou o clock** — os
+coeficientes valem só para a combinação medida.
 
 1. Defina `MODO_CALIBRACAO 1` em `src/main.cpp` e ligue um resistor
    conhecido no lugar do DUT, **dentro da janela do R9 instalado**
