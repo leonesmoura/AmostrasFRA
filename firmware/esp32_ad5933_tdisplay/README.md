@@ -122,17 +122,32 @@ energizar e medir com calma.
 
 ## Calibração (fase 3 do plano)
 
-Enquanto `GAIN_FACTOR` estiver no valor de fábrica (1.0), o firmware
-**recusa** varrer e avisa "não calibrado" — sem isso ele emitiria ohms
-errados por um fator de ~5 milhões, com toda a cara de medida válida.
+**Já calibrado** (04/08/2026, padrão de 220 kΩ, 2–100 kHz, 2 Vpp, PGA ×1,
+clock interno). Verificação com o próprio padrão: |Z| médio **220.056 Ω**
+(+0,03 %), erro rms 0,17 %, fase média **+0,03°** (rms 0,21°). Enquanto
+`CALIBRADO` for `false` o firmware **recusa** varrer, em vez de emitir
+ohms errados por ordens de grandeza com cara de medida válida.
+
+A calibração usa **polinômios em frequência**, não constantes: a fase do
+sistema anda de 89,5° a 160,8° na banda (atraso de ~1,96 µs do caminho
+analógico mais a DFT). Um valor único daria ±36° de erro de fase, o que
+destrói qualquer diagrama de Nyquist. `GF(f)` é quadrático e `FASE(f)`
+linear — é a calibração multiponto que o datasheet recomenda para
+varreduras largas. **Refaça a calibração se trocar R9, a faixa de saída,
+o PGA ou o clock**, porque os coeficientes dependem dos quatro.
 
 1. Defina `MODO_CALIBRACAO 1` em `src/main.cpp` e ligue um resistor
    conhecido no lugar do DUT, **dentro da janela do R9 instalado**
    (220 kΩ a 1 MΩ com o R9 de fábrica); ajuste `R_CALIBRACAO` para o
    valor real desse resistor;
 2. Grave, rode uma varredura **na mesma faixa de frequência, Vpp e PGA
-   que serão usados na medida** — o gain factor depende dos três — e
-   anote `GAIN_FACTOR` e `FASE_SISTEMA` impressos no monitor serial (o
-   display também mostra);
-3. Volte `MODO_CALIBRACAO 0`, cole os dois valores nas constantes e
-   regrave.
+   que serão usados na medida** — a calibração depende dos três. Cada
+   ponto sai como `# CAL f=... real=... imag=... mag=...`;
+3. Ajuste os coeficientes: `GF(f)` é o ajuste quadrático de
+   `1/(R_CALIBRACAO·mag)` contra `f`, e `FASE(f)` o ajuste linear de
+   `atan2(imag, real)` desenrolado contra `f`. Confira as magnitudes: se
+   passarem de ~30.000 contagens o estágio I-V está saturando (padrão
+   pequeno demais para o R9), e se ficarem perto de zero o caminho até o
+   DUT está aberto — quase sempre jumper de P2/P7;
+4. Volte `MODO_CALIBRACAO 0`, cole os cinco coeficientes, ajuste
+   `F_CAL_MIN`/`F_CAL_MAX` para a banda usada e regrave.

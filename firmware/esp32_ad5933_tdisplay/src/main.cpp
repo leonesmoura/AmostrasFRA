@@ -80,8 +80,41 @@ static double freqMinimaDft() { return AD5933_MCLK_HZ / 16384.0; }
 // padrao de 1 kohm satura o estagio I-V e produz um gain factor invalido
 // — para medir a decada de 1 kohm e' preciso trocar R9 por ~1 kohm.
 static const double R_CALIBRACAO = 220000.0;
-static const double GAIN_FACTOR  = 1.0;   // placeholder: calibrar (fase 3)
-static const double FASE_SISTEMA = 0.0;   // placeholder: calibrar (fase 3)
+
+// Calibracao medida em 04/08/2026 com padrao de 220 kohm, 2 a 100 kHz,
+// 2 Vpp, PGA x1, clock interno. Uma constante unica NAO serve: a fase do
+// sistema anda de 89,5 a 160,8 graus dentro da banda (atraso de ~1,96 us
+// do caminho analogico mais a DFT), o que daria +-36 graus de erro — fatal
+// num diagrama de Nyquist. Por isso os dois sao polinomios em f, que e' a
+// calibracao multiponto recomendada pelo datasheet para varreduras largas.
+//   GF(f)   = GF_A*f^2 + GF_B*f + GF_C    -> residuo 0,14 % rms em |Z|
+//   FASE(f) = FASE_A*f + FASE_B  [rad]    -> residuo 0,22 grau rms
+// Refazer a calibracao se trocar R9, a faixa de saida, o PGA ou o clock.
+static const bool   CALIBRADO = true;
+static const double F_CAL_MIN = 2000.0;
+static const double F_CAL_MAX = 100000.0;
+static const double GF_A   =  3.700879457720e-21;
+static const double GF_B   = -1.484260684026e-16;
+static const double GF_C   =  5.057728056378e-10;
+static const double FASE_A =  1.232647705824e-05;
+static const double FASE_B =  1.566574170590e+00;
+
+// Fora da banda calibrada os polinomios viram extrapolacao: o argumento e'
+// limitado a [F_CAL_MIN, F_CAL_MAX] para nao divergir e a varredura avisa.
+static double fCalibravel(double f) {
+  if (f < F_CAL_MIN) return F_CAL_MIN;
+  if (f > F_CAL_MAX) return F_CAL_MAX;
+  return f;
+}
+
+static double gainFactorEm(double f) {
+  const double x = fCalibravel(f);
+  return (GF_A * x + GF_B) * x + GF_C;
+}
+
+static double faseSistemaEm(double f) {
+  return FASE_A * fCalibravel(f) + FASE_B;
+}
 
 // Convencao de sinal de Z'' do AmostrasFRA (Z'' < 0 p/ capacitivo).
 static const bool INVERTER_SINAL_ZII = false;
@@ -193,12 +226,12 @@ static void configuraSweep() {
   escreveReg(REG_CTRL_LO, ctrlLo(false));
 }
 
-static void converteImpedancia(int16_t re, int16_t im,
+static void converteImpedancia(int16_t re, int16_t im, double f,
                                double &zr, double &zi) {
   double mag = sqrt((double)re * re + (double)im * im);
-  double zmod = (GAIN_FACTOR > 0 && mag > 0)
-                ? 1.0 / (GAIN_FACTOR * mag) : 0.0;
-  double theta = atan2((double)im, (double)re) - FASE_SISTEMA;
+  double gf = gainFactorEm(f);
+  double zmod = (gf > 0 && mag > 0) ? 1.0 / (gf * mag) : 0.0;
+  double theta = atan2((double)im, (double)re) - faseSistemaEm(f);
   zr = zmod * cos(theta);
   zi = zmod * sin(theta);
   if (INVERTER_SINAL_ZII) zi = -zi;
@@ -206,16 +239,20 @@ static void converteImpedancia(int16_t re, int16_t im,
 
 static void executaVarredura() {
 #if !MODO_CALIBRACAO
-  // Sem calibracao o gain factor e' o placeholder 1.0 e |Z| = 1/mag sai
-  // ~5e6 vezes menor que o valor real (0,0002 ohm para 1 kohm). Melhor
-  // recusar do que emitir numeros com cara de medida valida. O gain
-  // factor fisico fica na ordem de 1e-9; qualquer valor acima de 1e-4
-  // e' placeholder ou erro de digitacao.
-  if (GAIN_FACTOR > 1e-4) {
-    Serial.println("# ERRO: firmware nao calibrado (GAIN_FACTOR placeholder).");
-    Serial.println("#       Rode com MODO_CALIBRACAO 1 e preencha GAIN_FACTOR/FASE_SISTEMA.");
+  // Sem calibracao os ohms sairiam errados por ordens de grandeza, com
+  // toda a aparencia de medida valida — melhor recusar.
+  if (!CALIBRADO) {
+    Serial.println("# ERRO: firmware nao calibrado.");
+    Serial.println("#       Rode com MODO_CALIBRACAO 1 e preencha os coeficientes.");
     telas::erro("Nao calibrado - ver fase 3");
     return;
+  }
+  const double fFinal = F_INICIAL + F_INCREMENTO * (N_PONTOS - 1);
+  if (F_INICIAL < F_CAL_MIN || fFinal > F_CAL_MAX) {
+    Serial.print("# AVISO: faixa fora da calibracao (");
+    Serial.print(F_CAL_MIN, 0); Serial.print(" a ");
+    Serial.print(F_CAL_MAX, 0);
+    Serial.println(" Hz) - pontos fora dela usam os coeficientes da borda.");
   }
 #endif
   if (F_INICIAL < freqMinimaDft()) {
@@ -283,7 +320,7 @@ static void executaVarredura() {
     telas::ponto(i, N_PONTOS, f, mag, ultimaFase * 57.2957795);
 #else
     double zr, zi;
-    converteImpedancia(re, im, zr, zi);
+    converteImpedancia(re, im, f, zr, zi);
     Serial.print("f=");   Serial.print(f, 3);
     Serial.print(" z'="); Serial.print(zr, 4);
     Serial.print(" z''=");Serial.println(zi, 4);
