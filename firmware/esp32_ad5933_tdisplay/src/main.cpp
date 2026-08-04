@@ -79,25 +79,40 @@ static double freqMinimaDft() { return AD5933_MCLK_HZ / 16384.0; }
 // (R9, 200 kohm de fabrica) permite: na pratica 220 kohm a 1 Mohm. Um
 // padrao de 1 kohm satura o estagio I-V e produz um gain factor invalido
 // — para medir a decada de 1 kohm e' preciso trocar R9 por ~1 kohm.
-static const double R_CALIBRACAO = 220000.0;
+static const double R_CALIBRACAO = 147.6;   // padrao usado na ultima calibracao
 
-// Calibracao medida em 04/08/2026 com padrao de 220 kohm, 2 a 100 kHz,
-// 2 Vpp, PGA x1, clock interno. Uma constante unica NAO serve: a fase do
-// sistema anda de 89,5 a 160,8 graus dentro da banda (atraso de ~1,96 us
-// do caminho analogico mais a DFT), o que daria +-36 graus de erro — fatal
-// num diagrama de Nyquist. Por isso os dois sao polinomios em f, que e' a
-// calibracao multiponto recomendada pelo datasheet para varreduras largas.
-//   GF(f)   = GF_A*f^2 + GF_B*f + GF_C    -> residuo 0,14 % rms em |Z|
-//   FASE(f) = FASE_A*f + FASE_B  [rad]    -> residuo 0,22 grau rms
-// Refazer a calibracao se trocar R9, a faixa de saida, o PGA ou o clock.
+// Calibracao de DOIS PONTOS, 04/08/2026: padroes de 147,6 ohm e 332,5 ohm,
+// 2 a 100 kHz, 2 Vpp, PGA x1, clock interno, com o R9 ja' modificado
+// (330 ohm em paralelo com os 200,4 kohm originais).
+//
+// MODELO. A magnitude bruta da DFT responde a' CORRENTE, e o AD5933 tem
+// resistencia de saida propria em serie com a amostra:
+//     mag = K(f) / (ROUT + |Z|)
+// e nao mag ~ 1/|Z|. Com um unico padrao os dois efeitos se confundem e a
+// resposta vira afim: o erro chega a +94 % em 150 ohm e -16 % em 15 kohm.
+// Por isso a calibracao usa dois padroes e resolve o ROUT explicitamente.
+// Medido: ROUT = 230,3 ohm (o datasheet da' 200 ohm como TIPICO), com
+// desvio de apenas 0,5 ohm em 99 frequencias — vale a pena medir, nao supor.
+//
+//   K(f)    = K_A*f^2 + K_B*f + K_C       -> residuo 0,13 % rms
+//   FASE(f) = FASE_A*f + FASE_B  [rad]    -> residuo 0,23 grau rms
+//
+// A fase do sistema NAO e' constante: vai de 89,2 a 153,2 graus na banda
+// (atraso de 1,77 us). O termo constante deu 1,5718 rad = pi/2, que sao os
+// 90 graus inerentes a' conversao corrente-tensao.
+//
+// Verificacao sobre os proprios padroes: 332,47 ohm (alvo 332,5) e
+// 147,57 ohm (alvo 147,6). REFAZER se trocar R9, faixa de saida, PGA ou
+// clock — os coeficientes valem so' para essa combinacao.
 static const bool   CALIBRADO = true;
 static const double F_CAL_MIN = 2000.0;
 static const double F_CAL_MAX = 100000.0;
-static const double GF_A   =  3.700879457720e-21;
-static const double GF_B   = -1.484260684026e-16;
-static const double GF_C   =  5.057728056378e-10;
-static const double FASE_A =  1.232647705824e-05;
-static const double FASE_B =  1.566574170590e+00;
+static const double K_A      = -1.297152392695e-05;
+static const double K_B      = -8.669915510008e-02;
+static const double K_C      =  4.683947170245e+06;
+static const double ROUT_OHM =  230.3248;
+static const double FASE_A   =  1.114138937902e-05;
+static const double FASE_B   =  1.571832821289e+00;
 
 // Fora da banda calibrada os polinomios viram extrapolacao: o argumento e'
 // limitado a [F_CAL_MIN, F_CAL_MAX] para nao divergir e a varredura avisa.
@@ -107,9 +122,9 @@ static double fCalibravel(double f) {
   return f;
 }
 
-static double gainFactorEm(double f) {
+static double ganhoEm(double f) {
   const double x = fCalibravel(f);
-  return (GF_A * x + GF_B) * x + GF_C;
+  return (K_A * x + K_B) * x + K_C;
 }
 
 static double faseSistemaEm(double f) {
@@ -229,11 +244,13 @@ static void configuraSweep() {
 static void converteImpedancia(int16_t re, int16_t im, double f,
                                double &zr, double &zi) {
   double mag = sqrt((double)re * re + (double)im * im);
-  double gf = gainFactorEm(f);
-  double zmod = (gf > 0 && mag > 0) ? 1.0 / (gf * mag) : 0.0;
+  // O que a magnitude entrega e' o modulo de (ROUT + Z), nao de Z.
+  double zTotal = (mag > 0) ? ganhoEm(f) / mag : 0.0;
   double theta = atan2((double)im, (double)re) - faseSistemaEm(f);
-  zr = zmod * cos(theta);
-  zi = zmod * sin(theta);
+  // O ROUT e' resistivo puro, entao sai apenas da parte real — e DEPOIS da
+  // rotacao de fase, senao a subtracao cai no eixo errado.
+  zr = zTotal * cos(theta) - ROUT_OHM;
+  zi = zTotal * sin(theta);
   if (INVERTER_SINAL_ZII) zi = -zi;
 }
 
