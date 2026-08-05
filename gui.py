@@ -2676,7 +2676,21 @@ class SerialDialog(QDialog):
             self.ad_settle.setRange(1, 511)
             self.ad_settle.setValue(100)
             self.ad_settle.setToolTip(
-                "Ciclos de acomodação do DUT antes de cada DFT."
+                "Ciclos da excitação que o chip gera antes de iniciar a DFT,\n"
+                "para o DUT chegar ao regime permanente. O tempo é N/f:\n"
+                "100 ciclos são 1 ms a 100 kHz, mas 100 ms a 1 kHz.\n"
+                "O máximo de 511 é do hardware: o campo do registrador\n"
+                "0x8A/0x8B do AD5933 tem 9 bits (2⁹ − 1 = 511)."
+            )
+            self.ad_delay = QSpinBox(self)
+            self.ad_delay.setRange(0, 5000)
+            self.ad_delay.setValue(0)
+            self.ad_delay.setSuffix(" ms")
+            self.ad_delay.setToolTip(
+                "Pausa após cada ponto, só para dar tempo de ler o display\n"
+                "da placa. Não afeta a medida: entra depois do dado já ter\n"
+                "sido lido e enviado. Deixe em 0 para varrer na velocidade\n"
+                "máxima."
             )
 
             self.ad_config_button = QPushButton(
@@ -2703,9 +2717,21 @@ class SerialDialog(QDialog):
             grid.addWidget(self.ad_pga_combo, 1, 3)
             grid.addWidget(QLabel("Acomodação:", self), 1, 4)
             grid.addWidget(self.ad_settle, 1, 5)
-            grid.addWidget(self.ad_config_button, 2, 1)
-            grid.addWidget(self.ad_sweep_button, 2, 3)
-            grid.addWidget(self.ad_temp_button, 2, 5)
+            self.ad_calib_button = QPushButton(
+                "Calibrar instrumento...", self
+            )
+            self.ad_calib_button.setToolTip(
+                "Assistente guiado: mede padrões conhecidos, resolve o ganho,\n"
+                "a fase do sistema e a resistência de saída do chip, e grava\n"
+                "os coeficientes na memória da placa."
+            )
+            self.ad_calib_button.clicked.connect(self._open_calibracao)
+            grid.addWidget(QLabel("Pausa p/ leitura:", self), 2, 0)
+            grid.addWidget(self.ad_delay, 2, 1)
+            grid.addWidget(self.ad_calib_button, 2, 3)
+            grid.addWidget(self.ad_config_button, 3, 1)
+            grid.addWidget(self.ad_sweep_button, 3, 3)
+            grid.addWidget(self.ad_temp_button, 3, 5)
 
         # -- Layout -------------------------------------------------------
         conn_row = QHBoxLayout()
@@ -2777,6 +2803,15 @@ class SerialDialog(QDialog):
             return False
         return True
 
+    def _open_calibracao(self) -> None:
+        """Abre o assistente de calibração do instrumento."""
+        if not self._require_connection():
+            return
+        from calibracao import CalibracaoDialog
+
+        dialogo = CalibracaoDialog(self, self._acq)
+        dialogo.exec()
+
     def _send_ad5933_config(self) -> None:
         """Envia a configuração de varredura ao firmware (comando C)."""
         if not self._require_connection():
@@ -2796,7 +2831,8 @@ class SerialDialog(QDialog):
             f"C f0={f0:.3f} df={df:.6f} n={n} "
             f"vpp={self.ad_range_combo.currentData()} "
             f"pga={self.ad_pga_combo.currentData()} "
-            f"st={self.ad_settle.value()}"
+            f"st={self.ad_settle.value()} "
+            f"dly={self.ad_delay.value()}"
         )
         self._acq.send_text(command)
         self.status_label.setText(

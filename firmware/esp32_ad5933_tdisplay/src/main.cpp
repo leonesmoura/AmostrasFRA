@@ -22,12 +22,21 @@
  *      -> configura a varredura (enviado pelo AmostrasFRA)
  *   V  -> liga a excitacao continua na frequencia inicial (bancada)
  *   P  -> desliga a excitacao
+ *   G  -> imprime a calibracao vigente (uma linha por subfaixa de PGA)
+ *   W pga=<1|5> ka= kb= kc= fa= fb= rout= fmin= fmax=
+ *      -> grava a calibracao na NVS (assistente do AmostrasFRA)
+ *   X  -> apaga a calibracao gravada e volta aos valores de fabrica
+ *
+ * Com "raw=1" no comando C, a varredura seguinte sai como
+ *   # RAW f=<Hz> real=<int> imag=<int>
+ * sem converter em ohms — e' o que alimenta o assistente de calibracao.
  *
  * Saida por ponto (formato rotulado que o AmostrasFRA ja aceita):
  *   f=<Hz> z'=<ohm> z''=<ohm>\n
  */
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <Wire.h>
 #include <math.h>
 
@@ -64,6 +73,12 @@ enum { PGA_x5=0x0000, PGA_x1=0x0100 };
 static uint16_t FAIXA_SAIDA = SAIDA_2V;
 static uint16_t GANHO_PGA   = PGA_x1;
 static uint16_t CICLOS_ACOMODACAO = 100;
+
+// Pausa depois de cada ponto, so' para dar tempo de LER o display. Nao
+// afeta a medida: ela entra depois do dado ja' ter sido lido e enviado.
+// Uma varredura de 100 pontos de 1 a 100 kHz leva ~0,6 s, ou seja 6 ms por
+// ponto — rapido demais para o olho. Configuravel por "dly=" no comando C.
+static uint16_t ATRASO_PONTO_MS = 0;
 
 // Frequencia minima util: a DFT integra 1024 amostras a MCLK/16, ou
 // seja uma janela fixa de 1024*16/MCLK segundos (0,98 ms com o clock
@@ -112,41 +127,154 @@ static const double R_CALIBRACAO = 147.6;   // padrao usado na ultima calibracao
 // A x5 precisou de um padrao so' porque o ROUT e' do chip e ja' estava
 // determinado pela x1 — ele nao depende do PGA. Ganho efetivo medido do
 // PGA: 4,858 (o nominal e' 5).
-static const bool   CALIBRADO = true;
-static const double F_CAL_MIN = 2000.0;
-static const double F_CAL_MAX = 100000.0;
-static const double ROUT_OHM  =  230.3248;
-// PGA x1 — residuo 0,13 % em |Z| e 0,23 grau em fase.
-static const double K1_A      = -1.297152392695e-05;
-static const double K1_B      = -8.669915510008e-02;
-static const double K1_C      =  4.683947170245e+06;
-static const double FASE1_A   =  1.114138937902e-05;
-static const double FASE1_B   =  1.571832821289e+00;
-// PGA x5 — residuo 0,29 % em |Z| e 1,7 graus em fase (sinal mais fraco).
-static const double K5_A      = -1.690647135774e-04;
-static const double K5_B      =  6.767157599982e+00;
-static const double K5_C      =  2.269985074007e+07;
-static const double FASE5_A   =  1.303983672756e-05;
-static const double FASE5_B   =  1.551299417715e+00;
+struct Calibracao {
+  double ka, kb, kc;     // K(f)    = ka*f^2 + kb*f + kc
+  double fa, fb;         // FASE(f) = fa*f + fb   [rad]
+  double fmin, fmax;     // banda em que os coeficientes valem
+};
+
+// Valores de FABRICA (compilados). O assistente de calibracao do AmostrasFRA
+// grava outros na NVS pelo comando W, e eles passam a valer sem recompilar;
+// o comando X restaura estes aqui.
+static const Calibracao CAL_FABRICA_X1 = {
+  -1.297152392695e-05, -8.669915510008e-02,  4.683947170245e+06,
+   1.114138937902e-05,  1.571832821289e+00,  2000.0, 100000.0
+};
+static const Calibracao CAL_FABRICA_X5 = {
+  -1.690647135774e-04,  6.767157599982e+00,  2.269985074007e+07,
+   1.303983672756e-05,  1.551299417715e+00,  2000.0, 100000.0
+};
+static const double ROUT_FABRICA = 230.3248;
+
+static Calibracao calX1     = CAL_FABRICA_X1;
+static Calibracao calX5     = CAL_FABRICA_X5;
+static double     ROUT_OHM  = ROUT_FABRICA;
+static bool       CALIBRADO = true;
+static bool       calDaNvs  = false;   // origem: gravada ou de fabrica
+
+// Varredura em modo bruto: emite real/imag sem converter em ohms. E' o que
+// o assistente de calibracao consome — sem ele seria preciso recompilar o
+// firmware so' para enxergar os numeros crus do conversor.
+static bool MODO_BRUTO = false;
+
+static const Calibracao &calAtual() {
+  return (GANHO_PGA == PGA_x5) ? calX5 : calX1;
+}
 
 // Fora da banda calibrada os polinomios viram extrapolacao: o argumento e'
-// limitado a [F_CAL_MIN, F_CAL_MAX] para nao divergir e a varredura avisa.
+// limitado a [fmin, fmax] para nao divergir e a varredura avisa.
 static double fCalibravel(double f) {
-  if (f < F_CAL_MIN) return F_CAL_MIN;
-  if (f > F_CAL_MAX) return F_CAL_MAX;
+  const Calibracao &c = calAtual();
+  if (f < c.fmin) return c.fmin;
+  if (f > c.fmax) return c.fmax;
   return f;
 }
 
 static double ganhoEm(double f) {
+  const Calibracao &c = calAtual();
   const double x = fCalibravel(f);
-  if (GANHO_PGA == PGA_x5) return (K5_A * x + K5_B) * x + K5_C;
-  return (K1_A * x + K1_B) * x + K1_C;
+  return (c.ka * x + c.kb) * x + c.kc;
 }
 
 static double faseSistemaEm(double f) {
-  const double x = fCalibravel(f);
-  return (GANHO_PGA == PGA_x5) ? (FASE5_A * x + FASE5_B)
-                               : (FASE1_A * x + FASE1_B);
+  const Calibracao &c = calAtual();
+  return c.fa * fCalibravel(f) + c.fb;
+}
+
+// ------------------- CALIBRACAO GRAVADA (NVS) ---------------------
+// A struct vai inteira como blob: evita as chaves de 15 caracteres do NVS
+// e mantem os dois jogos de coeficientes coerentes entre si.
+static Preferences nvs;
+static const char *NVS_ESPACO = "calad5933";
+
+static void carregaCalibracao() {
+  nvs.begin(NVS_ESPACO, true);              // somente leitura
+  if (nvs.getBytesLength("x1") == sizeof(Calibracao)) {
+    nvs.getBytes("x1", &calX1, sizeof(calX1));
+    if (nvs.getBytesLength("x5") == sizeof(Calibracao)) {
+      nvs.getBytes("x5", &calX5, sizeof(calX5));
+    }
+    ROUT_OHM = nvs.getDouble("rout", ROUT_FABRICA);
+    calDaNvs = true;
+  }
+  nvs.end();
+}
+
+static void imprimeCal(uint16_t pga, const Calibracao &c) {
+  // %.12g em vez de Serial.print(x, casas): os coeficientes vao de 1e-5 a
+  // 1e+7 e a impressao em ponto fixo perderia os algarismos dos pequenos.
+  char l[220];
+  snprintf(l, sizeof(l),
+           "# CAL pga=%d ka=%.12g kb=%.12g kc=%.12g fa=%.12g fb=%.12g "
+           "rout=%.12g fmin=%.12g fmax=%.12g origem=%s",
+           (pga == PGA_x5) ? 5 : 1, c.ka, c.kb, c.kc, c.fa, c.fb,
+           ROUT_OHM, c.fmin, c.fmax, calDaNvs ? "nvs" : "firmware");
+  Serial.println(l);
+}
+
+// Extrai " chave=valor" de uma linha de comando (todo par vem precedido de
+// espaco, entao " fa=" nunca casa dentro de " fmax=").
+static bool valorDe(const String &linha, const char *chave, double &saida) {
+  String alvo = String(" ") + chave + "=";
+  int p = linha.indexOf(alvo);
+  if (p < 0) return false;
+  int ini = p + alvo.length();
+  int fim = linha.indexOf(' ', ini);
+  if (fim < 0) fim = linha.length();
+  saida = linha.substring(ini, fim).toDouble();
+  return true;
+}
+
+// "W pga=1 ka=... kb=... kc=... fa=... fb=... rout=... fmin=... fmax=..."
+static void gravaCalibracao(const String &linha) {
+  double v;
+  if (!valorDe(linha, "pga", v) || (v != 1.0 && v != 5.0)) {
+    Serial.println("# ERRO: W exige pga=1 ou pga=5");
+    return;
+  }
+  const bool x5 = (v == 5.0);
+  Calibracao c = x5 ? calX5 : calX1;      // chave ausente mantem o valor
+  if (valorDe(linha, "ka",   v)) c.ka   = v;
+  if (valorDe(linha, "kb",   v)) c.kb   = v;
+  if (valorDe(linha, "kc",   v)) c.kc   = v;
+  if (valorDe(linha, "fa",   v)) c.fa   = v;
+  if (valorDe(linha, "fb",   v)) c.fb   = v;
+  if (valorDe(linha, "fmin", v)) c.fmin = v;
+  if (valorDe(linha, "fmax", v)) c.fmax = v;
+
+  double rout = ROUT_OHM;
+  if (valorDe(linha, "rout", v)) rout = v;
+
+  if (!(c.kc > 0.0) || !(c.fmin > 0.0) || !(c.fmax > c.fmin) ||
+      rout < 0.0 || rout > 100000.0) {
+    Serial.println("# ERRO: coeficientes invalidos, nada gravado");
+    return;
+  }
+
+  if (x5) calX5 = c; else calX1 = c;
+  ROUT_OHM  = rout;
+  CALIBRADO = true;
+  calDaNvs  = true;
+
+  nvs.begin(NVS_ESPACO, false);
+  nvs.putBytes(x5 ? "x5" : "x1", &c, sizeof(c));
+  nvs.putBytes(x5 ? "x1" : "x5", x5 ? &calX1 : &calX5, sizeof(c));
+  nvs.putDouble("rout", rout);
+  nvs.end();
+
+  Serial.print("# CAL gravada: pga=");
+  Serial.println(x5 ? 5 : 1);
+}
+
+static void apagaCalibracao() {
+  nvs.begin(NVS_ESPACO, false);
+  nvs.clear();
+  nvs.end();
+  calX1     = CAL_FABRICA_X1;
+  calX5     = CAL_FABRICA_X5;
+  ROUT_OHM  = ROUT_FABRICA;
+  calDaNvs  = false;
+  Serial.println("# CAL apagada (voltou aos valores de fabrica)");
 }
 
 // Convencao de sinal de Z'' do AmostrasFRA (Z'' < 0 p/ capacitivo).
@@ -276,18 +404,23 @@ static void executaVarredura() {
 #if !MODO_CALIBRACAO
   // Sem calibracao os ohms sairiam errados por ordens de grandeza, com
   // toda a aparencia de medida valida — melhor recusar.
-  if (!CALIBRADO) {
+  // O modo bruto nao converte em ohms, entao nao depende de calibracao —
+  // e' justamente ele que a produz.
+  if (!CALIBRADO && !MODO_BRUTO) {
     Serial.println("# ERRO: firmware nao calibrado.");
-    Serial.println("#       Rode com MODO_CALIBRACAO 1 e preencha os coeficientes.");
-    telas::erro("Nao calibrado - ver fase 3");
+    Serial.println("#       Use o assistente de calibracao do AmostrasFRA.");
+    telas::erro("Nao calibrado");
     return;
   }
-  const double fFinal = F_INICIAL + F_INCREMENTO * (N_PONTOS - 1);
-  if (F_INICIAL < F_CAL_MIN || fFinal > F_CAL_MAX) {
-    Serial.print("# AVISO: faixa fora da calibracao (");
-    Serial.print(F_CAL_MIN, 0); Serial.print(" a ");
-    Serial.print(F_CAL_MAX, 0);
-    Serial.println(" Hz) - pontos fora dela usam os coeficientes da borda.");
+  if (!MODO_BRUTO) {
+    const double fFinal = F_INICIAL + F_INCREMENTO * (N_PONTOS - 1);
+    const Calibracao &c = calAtual();
+    if (F_INICIAL < c.fmin || fFinal > c.fmax) {
+      Serial.print("# AVISO: faixa fora da calibracao (");
+      Serial.print(c.fmin, 0); Serial.print(" a ");
+      Serial.print(c.fmax, 0);
+      Serial.println(" Hz) - pontos fora dela usam os coeficientes da borda.");
+    }
   }
 #endif
   if (F_INICIAL < freqMinimaDft()) {
@@ -295,6 +428,11 @@ static void executaVarredura() {
     Serial.print(freqMinimaDft(), 1);
     Serial.println(" Hz) - pontos baixos sem validade.");
   }
+
+  // O modo bruto e' de um tiro so': vale para esta varredura e se desarma
+  // aqui, para nao sobreviver a um cancelamento ou timeout.
+  const bool bruto = MODO_BRUTO;
+  MODO_BRUTO = false;
 
   configuraSweep();
   telas::iniciaVarredura(N_PONTOS, vppMv());
@@ -318,7 +456,7 @@ static void executaVarredura() {
     const double tDftMs = 1000.0 * 16384.0 / AD5933_MCLK_HZ;   // ~0,98 ms
     const double fEspera = (f > 0.0) ? f : 1.0;
     const uint32_t limiteMs =
-        (uint32_t)(2.0 * (1000.0 * CICLOS_ACOMODACAO / fEspera + tDftMs)) + 250;
+        (uint32_t)(2.0 * (1000.0 * CICLOS_ACOMODACAO / fEspera + tDftMs)) + 500;
     uint32_t t0 = millis();
     while (!(leReg(REG_STATUS) & 0x02)) {
       if (botaoPressionado(BTN1_PIN)) {
@@ -354,20 +492,47 @@ static void executaVarredura() {
     Serial.print(" FASE_SISTEMA="); Serial.println(ultimaFase, 6);
     telas::ponto(i, N_PONTOS, f, mag, ultimaFase * 57.2957795);
 #else
-    double zr, zi;
-    converteImpedancia(re, im, f, zr, zi);
-    Serial.print("f=");   Serial.print(f, 3);
-    Serial.print(" z'="); Serial.print(zr, 4);
-    Serial.print(" z''=");Serial.println(zi, 4);
+    if (bruto) {
+      // Sem conversao: o assistente de calibracao precisa dos numeros crus.
+      Serial.print("# RAW f="); Serial.print(f, 3);
+      Serial.print(" real=");   Serial.print(re);
+      Serial.print(" imag=");   Serial.println(im);
+      // No display o valor mostrado e' a magnitude em contagens, nao ohms —
+      // e' o que interessa durante a calibracao (saturacao vs. sinal fraco).
+      double magb = sqrt((double)re * re + (double)im * im);
+      telas::ponto(i, N_PONTOS, f, magb,
+                   atan2((double)im, (double)re) * 57.2957795);
+    } else {
+      double zr, zi;
+      converteImpedancia(re, im, f, zr, zi);
+      Serial.print("f=");   Serial.print(f, 3);
+      Serial.print(" z'="); Serial.print(zr, 4);
+      Serial.print(" z''=");Serial.println(zi, 4);
 
-    double zmod = sqrt(zr * zr + zi * zi);
-    double faseGraus = atan2(zi, zr) * 57.2957795;
-    if (zmod > 0 && zmod < zMin) zMin = zmod;
-    if (zmod > zMax) zMax = zmod;
-    telas::ponto(i, N_PONTOS, f, zmod, faseGraus);
+      double zmod = sqrt(zr * zr + zi * zi);
+      double faseGraus = atan2(zi, zr) * 57.2957795;
+      if (zmod > 0 && zmod < zMin) zMin = zmod;
+      if (zmod > zMax) zMax = zmod;
+      telas::ponto(i, N_PONTOS, f, zmod, faseGraus);
+    }
 #endif
 
     if (leReg(REG_STATUS) & 0x04) break;    // fim da varredura
+
+    // Pausa de leitura: fora do laco de espera do DFT, entao nao conta
+    // para o timeout nem interfere na medida. BTN1 continua cancelando.
+    if (ATRASO_PONTO_MS > 0) {
+      uint32_t tp = millis();
+      while (millis() - tp < ATRASO_PONTO_MS) {
+        if (botaoPressionado(BTN1_PIN)) {
+          escreveReg(REG_CTRL_HI, ctrlHi(CMD_PDOWN));
+          Serial.println("# Varredura cancelada (BTN1).");
+          telas::erro("Cancelada (BTN1)");
+          return;
+        }
+        delay(5);
+      }
+    }
 
     escreveReg(REG_CTRL_HI, ctrlHi(CMD_INCR));
     f += F_INCREMENTO;
@@ -416,6 +581,7 @@ static void desligaExcitacao() {
 static void processaComando(const String &linha) {
   double f0 = F_INICIAL, df = F_INCREMENTO;
   long n = N_PONTOS, vpp = 0, pga = 0, st = CICLOS_ACOMODACAO;
+  long dly = -1, raw = -1;
 
   int pos = 1;  // pula o 'C'
   while (pos < (int)linha.length()) {
@@ -433,6 +599,8 @@ static void processaComando(const String &linha) {
     else if (chave == "vpp") vpp = (long)valor;
     else if (chave == "pga") pga = (long)valor;
     else if (chave == "st")  st  = (long)valor;
+    else if (chave == "dly") dly = (long)valor;
+    else if (chave == "raw") raw = (long)valor;
     pos = fim + 1;
   }
 
@@ -452,6 +620,8 @@ static void processaComando(const String &linha) {
   if (df > 0)               F_INCREMENTO = df;
   if (n >= 2 && n <= 512)   N_PONTOS     = (uint16_t)n;
   if (st >= 1 && st <= 511) CICLOS_ACOMODACAO = (uint16_t)st;
+  if (dly >= 0 && dly <= 5000) ATRASO_PONTO_MS = (uint16_t)dly;
+  if (raw >= 0) MODO_BRUTO = (raw != 0);
   if      (vpp == 2000) FAIXA_SAIDA = SAIDA_2V;
   else if (vpp == 1000) FAIXA_SAIDA = SAIDA_1V;
   else if (vpp == 400)  FAIXA_SAIDA = SAIDA_400mV;
@@ -464,7 +634,8 @@ static void processaComando(const String &linha) {
   Serial.print(" n=");            Serial.print(N_PONTOS);
   Serial.print(" vpp=");          Serial.print(vppMv());
   Serial.print(" pga=");          Serial.print(pgaX());
-  Serial.print(" st=");           Serial.println(CICLOS_ACOMODACAO);
+  Serial.print(" st=");           Serial.print(CICLOS_ACOMODACAO);
+  Serial.print(" dly=");          Serial.println(ATRASO_PONTO_MS);
 
   double fFinal = F_INICIAL + F_INCREMENTO * (N_PONTOS - 1);
   telas::configuracao(F_INICIAL, fFinal, N_PONTOS, vppMv(), pgaX(),
@@ -476,6 +647,8 @@ void setup() {
   Serial.begin(BAUD);
   pinMode(BTN1_PIN, INPUT_PULLUP);
   pinMode(BTN2_PIN, INPUT);        // input-only; pull-up externo
+
+  carregaCalibracao();             // NVS tem prioridade sobre os padroes
 
   telas::inicia();
   delay(900);                      // tela de abertura visivel
@@ -502,6 +675,12 @@ void loop() {
       else if (c == 'C' || c == 'c') processaComando(linha);
       else if (c == 'V' || c == 'v') ligaExcitacao();
       else if (c == 'P' || c == 'p') desligaExcitacao();
+      else if (c == 'G' || c == 'g') {
+        imprimeCal(PGA_x1, calX1);
+        imprimeCal(PGA_x5, calX5);
+      }
+      else if (c == 'W' || c == 'w') gravaCalibracao(linha);
+      else if (c == 'X' || c == 'x') apagaCalibracao();
     }
   }
 

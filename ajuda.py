@@ -585,6 +585,114 @@ Dados;</li>
 </ul>
 """, None))
 
+    # -- Calibração --------------------------------------------------------
+    s.append(("calibracao", "Calibração do instrumento", """
+<h1>Calibração do instrumento (botão "Calibrar instrumento…")</h1>
+
+<h2>Por que calibrar</h2>
+<p>O AD5933 <b>não mede ohms</b>. Ele devolve, para cada frequência, um
+par de números inteiros — real e imaginário — proporcional à
+<b>corrente</b> que atravessa a amostra. Sem calibração esses números
+não são impedância: são contagens do conversor. Uma varredura feita com
+o instrumento descalibrado produz gráficos com aparência perfeitamente
+normal e valores errados por ordens de grandeza.</p>
+
+<h2>O que a calibração determina</h2>
+<ul>
+<li><b>O ganho do caminho de medição</b>, <code>K(f)</code>. Ele depende
+sobretudo do resistor de transimpedância da placa (o <code>R9</code>),
+que é escolhido conforme a década de impedância que se quer medir.</li>
+<li><b>A fase do sistema.</b> O caminho analógico e a própria DFT
+introduzem um atraso, e atraso constante significa <b>fase proporcional
+à frequência</b>. Na prática ela varre de cerca de 89° a 153° ao longo
+da banda.</li>
+<li><b>A resistência de saída do próprio chip</b>, o <code>ROUT</code>,
+que fica eletricamente <b>em série</b> com a amostra.</li>
+</ul>
+
+<h2>Por que são dois padrões, e não um</h2>
+<p>Este é o ponto que mais gera erro silencioso. O que o instrumento
+mede é</p>
+<p align="center"><code>mag = K(f) / (ROUT + |Z|)</code></p>
+<p>e <b>não</b> <code>mag &prop; 1/|Z|</code>. Com um único padrão, o
+ganho e o <code>ROUT</code> ficam indistinguíveis: qualquer combinação
+dos dois que reproduza aquele ponto serve. O resultado é uma resposta
+<i>afim</i> em vez de proporcional, e o erro cresce à medida que a
+amostra se afasta do valor usado na calibração — podendo passar de
+<b>90 %</b> nas impedâncias baixas.</p>
+<p>O motivo é físico e fácil de ver com números: numa amostra de
+150&nbsp;Ω, um <code>ROUT</code> de ~230&nbsp;Ω é <b>maior que a própria
+amostra</b>. Confiar no valor "típico" do catálogo em vez de medir o do
+seu exemplar custa dezenas de porcento. Medido nesta placa, o
+<code>ROUT</code> ficou em 230,3&nbsp;Ω contra os 200&nbsp;Ω que o
+datasheet publica como típico.</p>
+<p>A partir da <b>segunda subfaixa</b> um padrão só é suficiente: o
+<code>ROUT</code> é uma propriedade do chip, não muda com o ganho do
+PGA, e o assistente reaproveita o valor já determinado.</p>
+
+<h2>Por que a fase não pode ser uma constante</h2>
+<p>Um valor único de fase erraria por dezenas de graus nos extremos da
+banda. Como o diagrama de Nyquist é justamente a parte real contra a
+imaginária, um erro de fase <b>gira</b> o gráfico inteiro: semicírculos
+aparecem deformados ou inclinados, e o ajuste de circuito equivalente
+converge para elementos que não existem. Por isso a fase é ajustada por
+uma reta em frequência, e o ganho por um polinômio de grau 2.</p>
+
+<h2>Escolhendo os padrões</h2>
+<ul>
+<li>Perto dos <b>extremos</b> da faixa que você vai medir — quanto mais
+distantes entre si, melhor a separação do <code>ROUT</code>;</li>
+<li><b>Medidos no multímetro</b>. O valor impresso no corpo do resistor
+não serve: a calibração é tão exata quanto o padrão;</li>
+<li>Resistores de <b>filme metálico 1&nbsp;%</b> e baixo coeficiente de
+temperatura. Resistores de fio têm indutância e falseiam a fase.</li>
+</ul>
+
+<h2>Passo a passo do assistente</h2>
+<ol>
+<li><b>Apresentação</b> — o que será feito e o que ter em mãos.</li>
+<li><b>Configuração da varredura</b> — ganho do PGA, excitação, faixa de
+frequência, número de pontos e acomodação. Use aqui <b>exatamente</b> a
+configuração com que pretende medir as amostras: a calibração vale para
+uma combinação específica.</li>
+<li><b>Primeiro padrão</b> — ligue-o entre os dois terminais da amostra,
+digite o valor medido e clique em <b>Medir padrão</b>.</li>
+<li><b>Segundo padrão</b> — idem, com o resistor do outro extremo. Há um
+botão para <b>pular</b> esta etapa quando o <code>ROUT</code> já for
+conhecido.</li>
+<li><b>Resultado</b> — números de qualidade e o gráfico de erro. O botão
+<b>Gravar na placa</b> guarda os coeficientes na memória não volátil do
+ESP32, de onde eles são lidos a cada partida — não é preciso recompilar
+o firmware.</li>
+</ol>
+
+<h2>Como interpretar o resultado</h2>
+<ul>
+<li><b>Resíduo do ganho</b> — abaixo de ~0,5 % é bom. Muito acima disso
+costuma indicar contato ruim, padrão instável ou nível de sinal
+impróprio.</li>
+<li><b>Resíduo da fase</b> — abaixo de ~1° é bom; ele piora quando o
+sinal é fraco.</li>
+<li><b>Magnitude saturada</b> (perto do teto do conversor) — o padrão é
+pequeno demais para o resistor de transimpedância instalado. Nenhuma
+matemática recupera um sinal ceifado: troque o padrão ou o
+<code>R9</code>.</li>
+<li><b>Magnitude fraca</b> (poucas centenas de contagens) — o padrão é
+grande demais para a faixa; use o ganho ×5 ou um padrão menor.</li>
+</ul>
+<p><b>Cuidado com a circularidade:</b> o assistente mostra a impedância
+reconstruída dos próprios padrões, mas eles participaram do ajuste, então
+reproduzi-los bem é esperado e prova pouco. A verificação que vale é
+medir depois um <b>terceiro resistor</b>, de valor conhecido, que não
+tenha entrado na calibração.</p>
+
+<h2>Quando recalibrar</h2>
+<p>Sempre que mudar qualquer elo da cadeia: o resistor de
+transimpedância da placa, a faixa de excitação, o ganho do PGA ou o
+clock do AD5933. O botão <b>Restaurar calibração de fábrica</b> apaga a
+calibração gravada e volta aos coeficientes compilados no firmware.</p>
+""", "serial"))
+
     # -- Simulação ---------------------------------------------------------
     s.append(("simulacao", "Simulação do módulo FV", f"""
 <h1>Simulação do módulo fotovoltaico</h1>
