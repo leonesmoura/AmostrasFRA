@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QComboBox,
@@ -752,6 +752,17 @@ class CalibracaoDialog(QDialog):
         coluna_banda.addWidget(self.banda_info)
         lay.addWidget(grupo_banda)
 
+        # Mapa dos estágios: a calibração completa são 6 perfis (3 bandas
+        # x 2 ganhos de PGA). Sem este quadro o usuário não tem como saber
+        # o que já foi feito e o que falta.
+        grupo_mapa = QGroupBox("Progresso da calibração (todas as etapas)", w)
+        mapa_lay = QVBoxLayout(grupo_mapa)
+        self.mapa_perfis = QLabel("", grupo_mapa)
+        self.mapa_perfis.setWordWrap(True)
+        self.mapa_perfis.setTextFormat(Qt.TextFormat.RichText)
+        mapa_lay.addWidget(self.mapa_perfis)
+        lay.addWidget(grupo_mapa)
+
 
         grupo = QGroupBox("Configuração da varredura", w)
         grade = QGridLayout(grupo)
@@ -833,16 +844,28 @@ class CalibracaoDialog(QDialog):
 
         if indice == 0:
             explica = (
-                "Ligue o <b>primeiro padrão</b> entre os dois terminais da "
-                "amostra e informe abaixo o valor <b>medido no "
-                "multímetro</b>. Escolha um resistor perto do <b>extremo "
-                "inferior</b> da faixa que pretende medir."
+                "<b>Faça agora, nesta ordem:</b>"
+                "<ol>"
+                "<li>Pegue o resistor perto do <b>extremo inferior</b> da "
+                "faixa que pretende medir e <b>meça-o no multímetro</b>;</li>"
+                "<li>Ligue-o entre os <b>dois terminais da amostra</b> "
+                "(borne verde da placa);</li>"
+                "<li>Digite abaixo o valor que o multímetro mostrou;</li>"
+                "<li>Clique em <b>Medir padrão</b> e aguarde a barra "
+                "completar — não mexa no resistor durante a medição.</li>"
+                "</ol>"
             )
         else:
             explica = (
-                "Troque para o <b>segundo padrão</b>, perto do <b>extremo "
-                "superior</b> da faixa, e informe o valor medido.<br><br>"
-                "Se você já calibrou outra subfaixa nesta placa, pode "
+                "<b>Faça agora, nesta ordem:</b>"
+                "<ol>"
+                "<li>Tire o primeiro resistor e ligue no lugar o do "
+                "<b>extremo superior</b> da faixa;</li>"
+                "<li>Digite abaixo o valor dele <b>medido no "
+                "multímetro</b>;</li>"
+                "<li>Clique em <b>Medir padrão</b> e aguarde.</li>"
+                "</ol>"
+                "Se esta placa já tem outra subfaixa calibrada, você pode "
                 "<b>pular esta etapa</b>: o ROUT já é conhecido e um padrão "
                 "basta para resolver só o ganho."
             )
@@ -1069,6 +1092,48 @@ class CalibracaoDialog(QDialog):
                 "para não emitir ohms sem calibração."
             )
         self.banda_info.setText(texto)
+        self._atualiza_mapa_perfis()
+
+    def _atualiza_mapa_perfis(self) -> None:
+        """Mostra quais dos seis perfis já foram calibrados.
+
+        A calibração completa não é um ato único: são três bandas de clock
+        vezes dois ganhos de PGA. Sem este quadro o usuário não tem como
+        saber em que etapa está nem quanto falta.
+        """
+        if not hasattr(self, "mapa_perfis"):
+            return
+        atual = self._banda_selecionada()
+        linhas = []
+        feitos = 0
+        for indice in sorted(self._bandas):
+            banda = self._bandas[indice]
+            marcas = []
+            for pga in (1, 5):
+                if self._tem_calibracao(indice, pga):
+                    marcas.append(
+                        f'<span style="color:#3fa34d;">&#10003; x{pga}</span>'
+                    )
+                    feitos += 1
+                else:
+                    marcas.append(
+                        f'<span style="color:#b06a2a;">&#9633; x{pga}</span>'
+                    )
+            destaque = atual is not None and atual.indice == indice
+            nome = f"Banda {indice}"
+            if destaque:
+                nome = f"<b>&#9654; {nome}</b>"
+            linhas.append(
+                f"{nome} &nbsp;({formata_hz(banda.fmin)} a "
+                f"{formata_hz(banda.fmax)}) &nbsp;&nbsp;"
+                + " &nbsp; ".join(marcas)
+            )
+        resumo = (
+            f"<b>{feitos} de {2 * len(self._bandas)}</b> perfis calibrados "
+            "— cada banda precisa dos dois ganhos de PGA para cobrir toda "
+            "a sua faixa de impedância."
+        )
+        self.mapa_perfis.setText("<br>".join(linhas) + "<br><br>" + resumo)
 
     def _registra_banda(self, texto: str) -> None:
         """Atualiza a tabela de bandas com uma resposta ``# BAND``.
@@ -1286,7 +1351,22 @@ class CalibracaoDialog(QDialog):
             f"({100.0 * m.max() / MAG_ESCALA:.0f} % da escala do conversor)."
         )
         if aviso:
-            msg += f"<br><br><b>Atenção:</b> {aviso}"
+            msg += (
+                f"<br><br><b>Atenção:</b> {aviso}<br>"
+                "Resolva e clique em <b>Medir padrão</b> de novo — dá para "
+                "repetir quantas vezes precisar."
+            )
+        else:
+            proximo = (
+                "medir o segundo padrão"
+                if indice == 0
+                else "ver o resultado"
+            )
+            msg += (
+                '<br><br><span style="color:#3fa34d;"><b>&#10003; Padrão '
+                f"medido.</b></span> Clique em <b>Próximo</b> para "
+                f"{proximo}."
+            )
         estado.setText(msg)
         self._atualiza_navegacao()
 
@@ -1422,13 +1502,35 @@ class CalibracaoDialog(QDialog):
             None,
         )
         if gravou and not erro:
+            self._atualiza_mapa_perfis()
+            # Depois de gravar, o que importa não é a confirmação em si —
+            # é o usuário saber qual é a próxima etapa das seis.
+            faltam = [
+                (indice, pga)
+                for indice in sorted(self._bandas)
+                for pga in (1, 5)
+                if not self._tem_calibracao(indice, pga)
+            ]
+            if faltam:
+                b, p = faltam[0]
+                proximo = (
+                    f"Ainda faltam {len(faltam)} perfis. O próximo é a "
+                    f"banda {b} com PGA x{p}: volte ao passo 2, escolha "
+                    "essa combinação e repita a medição dos padrões."
+                )
+            else:
+                proximo = (
+                    "Todos os perfis estão calibrados — o instrumento "
+                    "cobre a faixa inteira."
+                )
             QMessageBox.information(
                 self,
                 "Calibração gravada",
                 "Os coeficientes foram gravados na memória não volátil da "
                 "placa e continuam valendo após desligar.\n\n"
-                "Recomendo conferir agora com um terceiro resistor, que não "
-                "participou da calibração.",
+                "Confira agora com um terceiro resistor, de valor conhecido, "
+                "que não participou da calibração — reproduzir os próprios "
+                "padrões prova pouco.\n\n" + proximo,
             )
         else:
             QMessageBox.warning(
