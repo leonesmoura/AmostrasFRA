@@ -693,6 +693,332 @@ clock do AD5933. O botão <b>Restaurar calibração de fábrica</b> apaga a
 calibração gravada e volta aos coeficientes compilados no firmware.</p>
 """, "serial"))
 
+    # -- O analisador AD5933 -----------------------------------------------
+    s.append(("ad5933", "O analisador AD5933", f"""
+<h1>O analisador de impedância AD5933</h1>
+<p>Todo o hardware de aquisição deste projeto gira em torno de um único
+circuito integrado, o <b>AD5933</b> da Analog Devices. Entender o que ele
+faz — e sobretudo o que ele <i>não</i> faz — é pré-requisito para
+interpretar qualquer espectro medido aqui, e para defender os resultados
+com propriedade.</p>
+
+{_img("ad5933_blocos.png")}
+
+<h2>O que o chip é</h2>
+<p>É um <b>conversor de impedância</b> completo num só encapsulamento,
+reunindo três coisas que normalmente seriam instrumentos separados:</p>
+<ul>
+<li>um <b>gerador de sinal</b> por síntese digital direta (DDS), que
+produz uma senoide de frequência programável;</li>
+<li>um <b>receptor</b> com amplificador de transimpedância, ganho
+programável, filtro e conversor A/D de 12 bits;</li>
+<li>um <b>detector síncrono</b> — uma DFT de 1024 pontos implementada em
+hardware, que extrai a componente do sinal <i>exatamente</i> na
+frequência de excitação.</li>
+</ul>
+<p>Esse último item é o que torna possível fazer espectroscopia de
+impedância com um chip barato: a DFT funciona como um amplificador
+<i>lock-in</i>, rejeitando ruído e interferência em qualquer frequência
+que não seja a da excitação. É por isso que uma medida limpa sai mesmo
+num ambiente eletricamente sujo.</p>
+
+<h2>Como a medida acontece</h2>
+<ol>
+<li>O DDS gera uma senoide na frequência programada, que sai pelo pino
+<b>VOUT</b> com um nível contínuo próprio (o <i>offset</i>).</li>
+<li>Essa tensão é aplicada à amostra. A corrente resultante entra no
+pino <b>VIN</b>, que o chip mantém como <b>terra virtual</b> em
+VDD/2 — ou seja, a amostra vê a diferença entre o offset do VOUT e
+VDD/2 como polarização contínua.</li>
+<li>O amplificador de transimpedância converte essa corrente em tensão,
+com ganho dado pelo resistor externo <b>R<sub>FB</sub></b>.</li>
+<li>O sinal passa pelo <b>PGA</b> (×1 ou ×5), por um filtro passa-baixas
+e é digitalizado a MCLK/16.</li>
+<li>A DFT acumula 1024 amostras e grava dois inteiros de 16 bits com
+sinal: <b>REAL</b> e <b>IMAG</b>.</li>
+</ol>
+
+<h2>O ponto que mais gera erro</h2>
+<p>O AD5933 <b>não devolve ohms</b>. REAL e IMAG são proporcionais à
+<b>corrente</b>, não à impedância, e a constante de proporcionalidade
+depende do R<sub>FB</sub>, do PGA, da faixa de excitação e do clock.
+Transformar esses inteiros em impedância é papel da calibração. Um
+instrumento descalibrado produz gráficos de aparência absolutamente
+normal e valores errados por ordens de grandeza — não há como perceber
+olhando o resultado.</p>
+
+<h2>Registradores relevantes</h2>
+<p>A comunicação é por <b>I²C</b>, no endereço <code>0x0D</code>. Neste
+projeto quem fala I²C com o chip é um ESP32, que faz a ponte para a USB
+do computador.</p>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Endereço</th><th>Função</th></tr>
+<tr><td><code>0x80</code>, <code>0x81</code></td><td>Controle: comando,
+faixa de saída, ganho do PGA, <i>reset</i> e seleção de clock</td></tr>
+<tr><td><code>0x82</code>–<code>0x84</code></td><td>Frequência inicial
+(24 bits)</td></tr>
+<tr><td><code>0x85</code>–<code>0x87</code></td><td>Incremento de
+frequência (24 bits)</td></tr>
+<tr><td><code>0x88</code>–<code>0x89</code></td><td>Número de
+incrementos (9 bits, máx. 511)</td></tr>
+<tr><td><code>0x8A</code>–<code>0x8B</code></td><td>Tempo de acomodação:
+contagem de 9 bits + multiplicador de 2 bits</td></tr>
+<tr><td><code>0x8F</code></td><td>Status: temperatura válida, dado
+válido, fim da varredura</td></tr>
+<tr><td><code>0x92</code>–<code>0x93</code></td><td>Temperatura do
+chip</td></tr>
+<tr><td><code>0x94</code>–<code>0x97</code></td><td>REAL e IMAG</td></tr>
+</table>
+<p>A palavra de frequência é calculada por</p>
+<p align="center"><code>código = (f ÷ (MCLK ÷ 4)) × 2<sup>27</sup></code></p>
+<p>o que dá uma resolução de MCLK/2<sup>29</sup> — cerca de
+0,03&nbsp;Hz com o oscilador interno.</p>
+
+<h2>Sensor de temperatura</h2>
+<p>O chip traz um sensor interno com resolução de 0,03&nbsp;°C, exposto
+no botão <b>Ler temperatura</b> da janela de conexão. Ele serve a dois
+propósitos: é o teste mais rápido de que o I²C está funcionando, e
+documenta a temperatura do ensaio — útil porque tanto o R<sub>FB</sub>
+quanto a própria amostra têm deriva térmica.</p>
+""", None))
+
+    s.append(("ad5933_freq", "Limites de frequência", f"""
+<h1>Limites de frequência</h1>
+
+<h2>O piso: por que existe e onde fica</h2>
+<p>A DFT do AD5933 sempre integra <b>1024 amostras</b>, e o conversor
+sempre amostra a <b>MCLK/16</b>. Isso significa que a janela de análise
+tem duração <b>fixa</b>, independente da frequência que se está
+medindo:</p>
+<p align="center"><code>janela = 1024 × 16 ÷ MCLK</code></p>
+<p>Com o oscilador interno de 16,776&nbsp;MHz, essa janela vale
+<b>0,98&nbsp;ms</b>. Para que a DFT tenha algum significado é preciso
+que ao menos <b>um ciclo completo</b> da excitação caiba nela, o que
+estabelece</p>
+<p align="center"><code>f<sub>mín</sub> = MCLK ÷ 16384 ≈ 1024 Hz</code></p>
+
+{_img("ad5933_dft.png")}
+
+<p>Abaixo desse piso o chip continua gerando a senoide e continua
+devolvendo números — mas a DFT integra apenas uma fração de ciclo, e o
+par REAL/IMAG deixa de ser uma medida de impedância. A 10&nbsp;Hz, por
+exemplo, a janela cobre menos de 1&nbsp;% de um ciclo. <b>O resultado é
+lixo com aparência de dado</b>, que é o pior tipo de falha num trabalho
+científico.</p>
+<p>Por isso o firmware deste projeto <b>recusa</b> frequências iniciais
+abaixo do piso e explica o motivo, em vez de deixar passar.</p>
+
+<h2>O teto</h2>
+<p>O datasheet especifica <b>100&nbsp;kHz</b> como frequência máxima de
+excitação. Acima disso o desempenho do estágio analógico e a rejeição do
+filtro deixam de ser garantidos. A placa deste projeto foi caracterizada
+até 100&nbsp;kHz.</p>
+
+<h2>Resolução</h2>
+<p>A palavra de frequência tem 24 bits e o passo é
+MCLK/2<sup>29</sup> ≈ 0,03&nbsp;Hz. Na prática a resolução nunca é o
+fator limitante: o número de pontos por varredura é que é limitado a
+<b>511 incrementos</b> pelo registrador <code>0x88</code>.</p>
+
+<h2>Para descer abaixo de 1 kHz</h2>
+<p>O piso é proporcional ao clock, e não uma limitação absoluta do chip.
+Fornecendo um clock mais lento pelo conector SMA, a banda inteira desce
+junto — ver o tópico <b>Clock externo</b>. É o caminho para alcançar a
+faixa de dezenas de hertz, onde ficam os fenômenos lentos de um módulo
+fotovoltaico.</p>
+""", "ad5933"))
+
+    s.append(("ad5933_imped", "Limites de impedância", f"""
+<h1>Limites de impedância</h1>
+
+<h2>Quem define a faixa</h2>
+<p>A corrente que atravessa a amostra é convertida em tensão pelo
+amplificador de transimpedância, e o ganho dessa conversão é o resistor
+externo <b>R<sub>FB</sub></b> (na placa deste projeto, o
+<code>R9</code>). Uma corrente pequena demais some no ruído; uma grande
+demais satura o estágio. Como a corrente é inversamente proporcional à
+impedância, <b>o R<sub>FB</sub> escolhe a década que a placa consegue
+medir</b>.</p>
+<p>A própria Analog Devices publica suas faixas nesses termos, uma
+década por vez, com o R<sub>FB</sub> da ordem do menor valor da faixa:</p>
+
+{_img("ad5933_faixa.png")}
+
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>R<sub>FB</sub></th><th>Faixa</th><th>Erro medido pelo
+fabricante</th></tr>
+<tr><td>100 Ω</td><td>100 Ω – 1 kΩ</td><td>até 7 %</td></tr>
+<tr><td>1 kΩ</td><td>1 – 10 kΩ</td><td>até 2 %</td></tr>
+<tr><td>10 kΩ</td><td>10 – 100 kΩ</td><td>± 0,3 %</td></tr>
+<tr><td>100 kΩ</td><td>100 kΩ – 1 MΩ</td><td>−3,5 a +1 %</td></tr>
+</table>
+<p>Note que <b>a década mais baixa é sempre a menos exata</b>. Isso é
+intrínseco ao chip e vale a pena registrar ao reportar incertezas.</p>
+
+<h2>A placa deste projeto</h2>
+<p>O kit vem de fábrica com <b>R<sub>FB</sub> = 200 kΩ</b>, o que o
+coloca na faixa de 100&nbsp;kΩ a 1&nbsp;MΩ — o fabricante anuncia
+1&nbsp;kΩ a 10&nbsp;MΩ, mas na prática qualquer amostra abaixo de
+~98&nbsp;kΩ satura. Para medir módulos fotovoltaicos, que ficam na
+década de centenas de ohms, soldou-se um resistor de <b>330 Ω em
+paralelo</b> com o original, levando a faixa útil para
+<b>150 Ω – 15 kΩ</b>.</p>
+
+<h2>Como reconhecer saturação</h2>
+<p>Saturação não se anuncia: a leitura simplesmente <b>trava num valor
+constante</b>, igual para qualquer amostra abaixo do limite. O teste
+decisivo é mudar o PGA de ×1 para ×5 — numa medida válida a leitura
+muda; num sinal ceifado ela praticamente não se altera, porque
+amplificar cinco vezes um sinal já ceifado não muda nada. O assistente
+de calibração faz esse diagnóstico automaticamente.</p>
+
+<h2>A resistência de saída do chip</h2>
+<p>Há um segundo limite, mais sutil. O AD5933 tem <b>resistência de
+saída própria</b> (R<sub>OUT</sub>) em <b>série</b> com a amostra: 200 Ω
+na faixa de 2 Vpp, 2,4 kΩ na de 1 Vpp, segundo o datasheet. Nesta placa
+o valor medido foi <b>230,3 Ω</b>.</p>
+<p>Isso tem duas consequências. Primeira: a tensão que efetivamente
+chega à amostra é dividida entre ela e o R<sub>OUT</sub>, então
+impedâncias muito baixas recebem pouca excitação — em 10 Ω sobrariam
+apenas 4 % do sinal. Segunda, e mais importante: o que o instrumento
+mede é <code>R<sub>OUT</sub> + Z</code>, não <code>Z</code>. Numa
+amostra de 150 Ω o R<sub>OUT</sub> é <i>maior que a própria amostra</i>,
+e ignorá-lo introduziria erro de dezenas de porcento. É por isso que a
+calibração deste projeto usa dois padrões e resolve o R<sub>OUT</sub>
+explicitamente.</p>
+""", "ad5933"))
+
+    s.append(("ad5933_pga", "Ganho PGA e acomodação", f"""
+<h1>Ganho PGA e tempo de acomodação</h1>
+
+<h2>Ganho PGA</h2>
+<p>O PGA (<i>programmable gain amplifier</i>) fica no <b>lado da
+recepção</b>, depois do amplificador de transimpedância e antes do
+conversor A/D. Ele multiplica o sinal medido por <b>1</b> ou por
+<b>5</b>, selecionado pelo bit D8 do registrador de controle. Ele
+<b>não</b> altera a excitação aplicada à amostra.</p>
+<p>Sua função é aproveitar a escala do conversor. Como a corrente cai
+com o aumento da impedância, amostras de alta impedância geram sinal
+fraco e usam poucos bits do conversor; o ×5 recupera resolução. Em
+contrapartida, ligar o ×5 numa amostra de baixa impedância satura.</p>
+
+{_img("ad5933_pga.png")}
+
+<p>Na prática o PGA <b>desloca a janela útil</b> em cerca de uma
+década — o que permite cobrir uma faixa ampla com o mesmo
+R<sub>FB</sub>. Nesta placa, com R<sub>FB</sub> ≈ 330 Ω, a divisão
+ficou assim:</p>
+<ul>
+<li><b>PGA ×1</b> — de 150 Ω a ~15 kΩ;</li>
+<li><b>PGA ×5</b> — de ~1,3 kΩ a 75 kΩ.</li>
+</ul>
+<p><b>Atenção:</b> o ganho efetivo medido foi <b>4,858</b>, e não 5
+exatos. Isso não é problema, porque a calibração absorve o valor real —
+mas significa que <b>cada ganho tem sua própria calibração</b>. Trocar o
+PGA sem recalibrar produz erro sistemático.</p>
+
+<h2>Tempo de acomodação</h2>
+<p>Ao mudar de frequência, o chip gera um número programável de ciclos
+da excitação <b>antes</b> de começar a integrar a DFT. Esse intervalo
+existe para que a amostra e toda a cadeia analógica cheguem ao
+<b>regime permanente</b>: medir durante o transitório falseia módulo e
+fase.</p>
+<p>O detalhe que costuma surpreender é que a contagem é em
+<b>ciclos</b>, não em tempo. A duração é portanto</p>
+<p align="center"><code>t<sub>acomodação</sub> = N ÷ f</code></p>
+<p>o que significa que os mesmos 100 ciclos custam 1&nbsp;ms a
+100&nbsp;kHz e <b>100&nbsp;ms a 1&nbsp;kHz</b>. Uma varredura que começa
+em frequência baixa é legitimamente lenta, e não há nada de errado
+nisso.</p>
+
+{_img("ad5933_acomodacao.png")}
+
+<h2>O limite de 511</h2>
+<p>A contagem fica nos registradores <code>0x8A</code>/<code>0x8B</code>,
+num campo de <b>9 bits</b> — daí o máximo de
+2<sup>9</sup> − 1 = <b>511</b>. Os bits D10 e D9 do mesmo registrador
+trazem um <b>multiplicador</b> de ×1, ×2 ou ×4, o que eleva o máximo
+efetivo a 2.044 ciclos. O firmware deste projeto mantém o multiplicador
+em ×1.</p>
+
+<h2>Como escolher</h2>
+<ul>
+<li><b>Amostras resistivas</b> (resistores de calibração): 100 ciclos é
+folgado.</li>
+<li><b>Amostras capacitivas</b> — e um módulo fotovoltaico é bastante
+capacitivo — precisam de mais tempo para carregar. Se o espectro
+apresentar dispersão anômala nas primeiras frequências, aumente a
+acomodação e verifique se o resultado muda: se mudar, ainda não estava
+em regime permanente.</li>
+<li><b>Frequências muito baixas</b>: reduza a acomodação para a
+varredura não se tornar impraticável, mas confira o efeito no
+resultado.</li>
+</ul>
+""", "ad5933"))
+
+    s.append(("ad5933_clock", "Clock externo (abaixo de 1 kHz)", f"""
+<h1>Clock externo — medindo abaixo de 1 kHz</h1>
+
+<h2>O princípio</h2>
+<p>Tudo no AD5933 é derivado do clock mestre: a frequência sintetizada
+pelo DDS, a taxa de amostragem do conversor e, por consequência, a
+duração da janela da DFT. Como o piso de frequência é
+<code>MCLK ÷ 16384</code>, <b>baixar o clock desloca a banda inteira
+para baixo</b>, na mesma proporção.</p>
+
+{_img("ad5933_clock.png")}
+
+<p>Para alcançar uma frequência mínima desejada, o clock necessário é</p>
+<p align="center"><code>MCLK = f<sub>mín</sub> × 16384</code></p>
+<p>Ou seja: para medir <b>10 Hz</b> são necessários cerca de
+<b>164 kHz</b> de clock. Note que o teto da banda desce junto — com
+164&nbsp;kHz de MCLK a frequência máxima cai para a casa do quilohertz.
+<b>Não existe uma configuração única que cubra de 10 Hz a 100 kHz</b>:
+a varredura passa a ser feita <b>por bandas</b>, cada uma com seu clock
+e sua calibração.</p>
+
+<h2>Onde ligar</h2>
+<p>Na placa KDT5933-013 o conector <b>SMA P5</b> está ligado
+diretamente ao pino MCLK (pino 8) do AD5933, com um resistor de
+1&nbsp;kΩ como <i>pull-down</i>. O footprint <b>U5</b>, que vem sem
+componente, está na <b>mesma rede</b> — de modo que soldar ali um
+oscilador do valor desejado é uma alternativa ao cabo SMA.</p>
+<p>O sinal deve ser uma <b>onda quadrada</b> de nível compatível com a
+alimentação digital do chip (3,3&nbsp;V). Um ESP32 gera isso sem
+hardware adicional, pelo periférico LEDC ou por um canal de PWM
+dedicado.</p>
+
+<h2>O que mudar no firmware</h2>
+<ol>
+<li>Ajustar <code>AD5933_MCLK_HZ</code> em <code>src/main.cpp</code>
+para a frequência <b>real</b> injetada. Todo o cálculo da palavra de
+frequência e o piso da DFT acompanham automaticamente esse valor.</li>
+<li>Definir <code>USAR_CLOCK_EXTERNO = true</code>, o que liga o bit
+<b>D3</b> do registrador de controle (<code>0x81</code>) e faz o chip
+ignorar o oscilador interno.</li>
+<li><b>Recalibrar</b>. O ganho e sobretudo a fase do sistema dependem do
+clock — o atraso equivalente muda, e com ele toda a correção de fase.</li>
+</ol>
+<p><b>Cuidado:</b> o driver de referência do fabricante contém um erro
+justamente nesse bit — a constante está comentada como
+<code>1&lt;&lt;3</code> mas vale <code>1&lt;&lt;2</code>. Não copie de
+lá.</p>
+
+<h2>Precisão do clock</h2>
+<p>A frequência de excitação é proporcional ao MCLK, então qualquer
+erro no clock vira erro proporcional na frequência do eixo do espectro.
+Um oscilador de cristal resolve; um clock derivado de temporizador de
+microcontrolador funciona, mas convém <b>medir</b> a frequência real com
+frequencímetro ou osciloscópio e informar esse valor ao firmware, em vez
+de confiar no valor nominal.</p>
+
+<h2>Estado neste projeto</h2>
+<p>A placa opera hoje com o <b>oscilador interno</b>, cobrindo de
+1&nbsp;kHz a 100&nbsp;kHz, faixa em que foi calibrada e validada. O
+clock externo está previsto como etapa seguinte, para alcançar a região
+de baixa frequência do espectro dos módulos.</p>
+""", "ad5933"))
+
     # -- Simulação ---------------------------------------------------------
     s.append(("simulacao", "Simulação do módulo FV", f"""
 <h1>Simulação do módulo fotovoltaico</h1>
