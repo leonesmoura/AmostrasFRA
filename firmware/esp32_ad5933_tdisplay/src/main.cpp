@@ -22,8 +22,11 @@
  *      -> configura a varredura (enviado pelo AmostrasFRA)
  *   V  -> liga a excitacao continua na frequencia inicial (bancada)
  *   P  -> desliga a excitacao
- *   G  -> imprime a calibracao vigente (uma linha por subfaixa de PGA)
- *   W pga=<1|5> ka= kb= kc= fa= fb= rout= fmin= fmax=
+ *   B  -> lista as bandas de frequencia (uma linha por banda)
+ *   B sel=<0..2>                  -> torna a banda ativa (clock + bit D3)
+ *   B i=<0..2> mclk=<Hz> ext=<0|1> -> configura a banda e grava na NVS
+ *   G  -> imprime a calibracao vigente (uma linha por banda e PGA)
+ *   W [banda=<0..2>] pga=<1|5> ka= kb= kc= fa= fb= rout= fmin= fmax=
  *      -> grava a calibracao na NVS (assistente do AmostrasFRA)
  *   X  -> apaga a calibracao gravada e volta aos valores de fabrica
  *
@@ -53,10 +56,68 @@ static const long     BAUD    = 115200;
 static const uint8_t BTN1_PIN = 0;
 static const uint8_t BTN2_PIN = 35;
 
-// Clock do AD5933 (Hz). Interno = 16,776 MHz. Se usar clock externo
-// no SMA P5, coloque aqui a frequencia real injetada.
-static const double   AD5933_MCLK_HZ = 16776000.0;
-static const bool     USAR_CLOCK_EXTERNO = false;
+// ------------------- BANDAS DE FREQUENCIA (MCLK) ------------------
+// Um unico MCLK cobre so' uma razao de ~97:1 (piso = MCLK/16384, teto =
+// MCLK/167,76). Para varrer de 100 Hz a 100 kHz a varredura passa a ser
+// feita POR BANDAS: cada banda tem o seu MCLK e a sua propria
+// calibracao. O teto fica em 100 kHz de proposito — 200 kHz exigiria
+// MCLK de 33,5 MHz, o dobro do maximo de 16,776 MHz do datasheet.
+//
+// A banda 0 usa o oscilador interno do AD5933; as demais recebem o
+// clock gerado pelo proprio ESP32 em PINO_MCLK e ligam o bit D3 do
+// registrador 0x81.
+static const uint8_t NUM_BANDAS = 3;
+
+struct Banda {
+  double mclkHz;    // MCLK EFETIVO da banda, em Hz
+  bool   externo;   // true = clock gerado pelo ESP32 (bit D3 do 0x81)
+};
+
+// constexpr (e nao const) para que os elementos possam inicializar o
+// vetor mutavel abaixo em tempo de compilacao.
+static constexpr Banda BANDAS_FABRICA[NUM_BANDAS] = {
+  { 16776000.0, false },   // 1,02 kHz a 100 kHz  (oscilador interno)
+  {  1638400.0, true  },   //  100 Hz  a 9,8 kHz
+  {   163840.0, true  },   //   10 Hz  a 977 Hz
+};
+
+static Banda   bandas[NUM_BANDAS] = { BANDAS_FABRICA[0], BANDAS_FABRICA[1],
+                                      BANDAS_FABRICA[2] };
+static uint8_t BANDA_ATIVA = 0;
+
+// Pino do clock externo. AJUSTAVEL: serve qualquer GPIO livre capaz de
+// saida. O 26 esta' livre no T-Display (19/18/5/16/23 vao para o TFT, 4
+// para o backlight, 21/22 para o I2C, 0/35 para os botoes).
+static const uint8_t PINO_MCLK = 26;
+
+// LEDC canal 2 — OBRIGATORIO. telas.cpp usa o canal 0 para o PWM do
+// backlight (BL_CANAL = 0, GPIO 4) e no arduino-esp32 o timer e'
+// (canal/2)%4: os canais 0 e 1 dividem o timer 0. O canal 2 cai no
+// timer 1 e pode ter frequencia propria sem apagar (ou piscar) o
+// display.
+static const uint8_t CANAL_MCLK = 2;
+
+// Resolucao do LEDC: o contador percorre 2^bits passos do clock de
+// 80 MHz a cada periodo, entao a maior resolucao possivel para f e'
+// bits = floor(log2(80e6/f)). O hardware nao passa de 14 bits nem
+// trabalha com menos de 1. O duty fica em 2^(bits-1), que sao os 50 %
+// de razao ciclica que o AD5933 espera no MCLK.
+static int bitsLedc(double f) {
+  int bits = (f > 0.0) ? (int)floor(log2(80000000.0 / f)) : 1;
+  if (bits < 1)  bits = 1;
+  if (bits > 14) bits = 14;
+  return bits;
+}
+
+static double mclkAtual()    { return bandas[BANDA_ATIVA].mclkHz; }
+static bool   clockExterno() { return bandas[BANDA_ATIVA].externo; }
+
+// Limites uteis de uma banda: piso da DFT e teto da excitacao.
+static double fminBanda(double mclk) { return mclk / 16384.0; }
+static double fmaxBanda(double mclk) { return mclk / 167.76; }
+
+// Definida adiante: precisa de ctrlLo() para reescrever o bit D3.
+static void aplicaClockBanda();
 
 // Varredura (configuravel em tempo real pelo comando "C").
 static double   F_INICIAL    = 1000.0;   // Hz
@@ -83,9 +144,10 @@ static uint16_t ATRASO_PONTO_MS = 0;
 // Frequencia minima util: a DFT integra 1024 amostras a MCLK/16, ou
 // seja uma janela fixa de 1024*16/MCLK segundos (0,98 ms com o clock
 // interno). Abaixo de MCLK/16384 nem um ciclo completo cabe na janela
-// e o par real/imag deixa de ser uma medida de impedancia. Bate com a
-// faixa de 1 kHz a 100 kHz especificada no datasheet.
-static double freqMinimaDft() { return AD5933_MCLK_HZ / 16384.0; }
+// e o par real/imag deixa de ser uma medida de impedancia. Com o clock
+// interno da' 1023,9 Hz, que e' o 1 kHz do datasheet; e' justamente
+// esse piso que as bandas de MCLK menor derrubam ate os 100 Hz.
+static double freqMinimaDft() { return fminBanda(mclkAtual()); }
 
 // --- Calibracao (fase 3) ---
 #define MODO_CALIBRACAO 0
@@ -146,20 +208,50 @@ static const Calibracao CAL_FABRICA_X5 = {
 };
 static const double ROUT_FABRICA = 230.3248;
 
-static Calibracao calX1     = CAL_FABRICA_X1;
-static Calibracao calX5     = CAL_FABRICA_X5;
-static double     ROUT_OHM  = ROUT_FABRICA;
-static bool       CALIBRADO = true;
-static bool       calDaNvs  = false;   // origem: gravada ou de fabrica
+// A calibracao passa a ser indexada por [banda][pga]: 3 bandas x 2
+// ganhos = 6 perfis. Os coeficientes de fabrica acima sao os da BANDA 0
+// (clock interno, 2 a 100 kHz); as bandas 1 e 2 nascem SEM calibracao e
+// a varredura nelas e' recusada ate o assistente gravar os seus
+// coeficientes. O ROUT e' do chip — nao depende de banda nem de PGA —
+// entao continua um valor unico e global.
+static const uint8_t IDX_X1 = 0, IDX_X5 = 1;
+static uint8_t idxPga() { return (GANHO_PGA == PGA_x5) ? IDX_X5 : IDX_X1; }
+
+static Calibracao cal[NUM_BANDAS][2];
+static bool calValida[NUM_BANDAS][2];   // perfil pode virar ohms?
+static bool calDeNvs[NUM_BANDAS][2];    // origem= nvs (senao firmware)
+static double ROUT_OHM = ROUT_FABRICA;
+
+// Volta bandas, perfis e ROUT aos valores de fabrica.
+static void restauraFabrica() {
+  for (uint8_t b = 0; b < NUM_BANDAS; b++) {
+    bandas[b] = BANDAS_FABRICA[b];
+    for (uint8_t p = 0; p < 2; p++) {
+      cal[b][p]       = (p == IDX_X5) ? CAL_FABRICA_X5 : CAL_FABRICA_X1;
+      calValida[b][p] = (b == 0);   // so' a banda 0 vem calibrada
+      calDeNvs[b][p]  = false;
+      if (b != 0) {
+        // Sem coeficientes proprios: zera K e FASE (marca inequivoca de
+        // perfil nao calibrado, ja' que o W exige kc > 0) e mostra a
+        // faixa FISICA da banda em vez da faixa da banda 0.
+        cal[b][p].ka = cal[b][p].kb = cal[b][p].kc = 0.0;
+        cal[b][p].fa = cal[b][p].fb = 0.0;
+        cal[b][p].fmin = fminBanda(bandas[b].mclkHz);
+        cal[b][p].fmax = fmaxBanda(bandas[b].mclkHz);
+      }
+    }
+  }
+  BANDA_ATIVA = 0;
+  ROUT_OHM    = ROUT_FABRICA;
+}
 
 // Varredura em modo bruto: emite real/imag sem converter em ohms. E' o que
 // o assistente de calibracao consome — sem ele seria preciso recompilar o
 // firmware so' para enxergar os numeros crus do conversor.
 static bool MODO_BRUTO = false;
 
-static const Calibracao &calAtual() {
-  return (GANHO_PGA == PGA_x5) ? calX5 : calX1;
-}
+static const Calibracao &calAtual() { return cal[BANDA_ATIVA][idxPga()]; }
+static bool calAtualValida()        { return calValida[BANDA_ATIVA][idxPga()]; }
 
 // Fora da banda calibrada os polinomios viram extrapolacao: o argumento e'
 // limitado a [fmin, fmax] para nao divergir e a varredura avisa.
@@ -182,33 +274,82 @@ static double faseSistemaEm(double f) {
 }
 
 // ------------------- CALIBRACAO GRAVADA (NVS) ---------------------
-// A struct vai inteira como blob: evita as chaves de 15 caracteres do NVS
-// e mantem os dois jogos de coeficientes coerentes entre si.
+// Cada perfil vai inteiro como blob: evita espalhar oito doubles em oito
+// chaves e mantem os coeficientes coerentes entre si. As chaves da NVS
+// tem no maximo 15 caracteres, dai os nomes curtos "b<banda>p<pga>"
+// ("b0p1", "b0p5", "b1p1", ...). O vetor de bandas vai em "bandas" e o
+// ROUT, que e' unico, em "rout".
 static Preferences nvs;
 static const char *NVS_ESPACO = "calad5933";
 
-static void carregaCalibracao() {
-  nvs.begin(NVS_ESPACO, true);              // somente leitura
-  if (nvs.getBytesLength("x1") == sizeof(Calibracao)) {
-    nvs.getBytes("x1", &calX1, sizeof(calX1));
-    if (nvs.getBytesLength("x5") == sizeof(Calibracao)) {
-      nvs.getBytes("x5", &calX5, sizeof(calX5));
-    }
-    ROUT_OHM = nvs.getDouble("rout", ROUT_FABRICA);
-    calDaNvs = true;
-  }
-  nvs.end();
+static void chaveCal(uint8_t b, uint8_t p, char *saida, size_t n) {
+  snprintf(saida, n, "b%up%u", (unsigned)b,
+           (unsigned)((p == IDX_X5) ? 5 : 1));
 }
 
-static void imprimeCal(uint16_t pga, const Calibracao &c) {
+static void carregaCalibracao() {
+  restauraFabrica();
+  nvs.begin(NVS_ESPACO, true);              // somente leitura
+
+  if (nvs.getBytesLength("bandas") == sizeof(bandas)) {
+    nvs.getBytes("bandas", bandas, sizeof(bandas));
+  }
+
+  bool achouAlgum = false;
+  for (uint8_t b = 0; b < NUM_BANDAS; b++) {
+    for (uint8_t p = 0; p < 2; p++) {
+      char k[16];
+      chaveCal(b, p, k, sizeof(k));
+      if (nvs.getBytesLength(k) == sizeof(Calibracao)) {
+        nvs.getBytes(k, &cal[b][p], sizeof(Calibracao));
+        calValida[b][p] = true;
+        calDeNvs[b][p]  = true;
+        achouAlgum = true;
+      }
+    }
+  }
+
+  // Compatibilidade: o firmware anterior nao tinha bandas e gravava
+  // "x1"/"x5". Esses blobs, se ainda existirem, sao a calibracao do
+  // clock interno — ou seja, da banda 0. Migra em vez de descartar: sao
+  // horas de bancada com padroes de 147,6 e 332,5 ohm.
+  for (uint8_t p = 0; p < 2; p++) {
+    const char *antiga = (p == IDX_X5) ? "x5" : "x1";
+    if (!calValida[0][p] &&
+        nvs.getBytesLength(antiga) == sizeof(Calibracao)) {
+      nvs.getBytes(antiga, &cal[0][p], sizeof(Calibracao));
+      calValida[0][p] = true;
+      calDeNvs[0][p]  = true;
+      achouAlgum = true;
+    }
+  }
+
+  if (achouAlgum) ROUT_OHM = nvs.getDouble("rout", ROUT_FABRICA);
+  nvs.end();
+
+  // Perfis que continuam sem calibracao acompanham a faixa fisica da
+  // banda, que pode ter vindo alterada da NVS.
+  for (uint8_t b = 0; b < NUM_BANDAS; b++) {
+    for (uint8_t p = 0; p < 2; p++) {
+      if (!calValida[b][p]) {
+        cal[b][p].fmin = fminBanda(bandas[b].mclkHz);
+        cal[b][p].fmax = fmaxBanda(bandas[b].mclkHz);
+      }
+    }
+  }
+}
+
+static void imprimeCal(uint8_t b, uint8_t p) {
   // %.12g em vez de Serial.print(x, casas): os coeficientes vao de 1e-5 a
   // 1e+7 e a impressao em ponto fixo perderia os algarismos dos pequenos.
-  char l[220];
+  const Calibracao &c = cal[b][p];
+  char l[240];
   snprintf(l, sizeof(l),
-           "# CAL pga=%d ka=%.12g kb=%.12g kc=%.12g fa=%.12g fb=%.12g "
-           "rout=%.12g fmin=%.12g fmax=%.12g origem=%s",
-           (pga == PGA_x5) ? 5 : 1, c.ka, c.kb, c.kc, c.fa, c.fb,
-           ROUT_OHM, c.fmin, c.fmax, calDaNvs ? "nvs" : "firmware");
+           "# CAL banda=%u pga=%d ka=%.12g kb=%.12g kc=%.12g fa=%.12g "
+           "fb=%.12g rout=%.12g fmin=%.12g fmax=%.12g origem=%s",
+           (unsigned)b, (p == IDX_X5) ? 5 : 1, c.ka, c.kb, c.kc, c.fa,
+           c.fb, ROUT_OHM, c.fmin, c.fmax,
+           calDeNvs[b][p] ? "nvs" : "firmware");
   Serial.println(l);
 }
 
@@ -225,15 +366,29 @@ static bool valorDe(const String &linha, const char *chave, double &saida) {
   return true;
 }
 
-// "W pga=1 ka=... kb=... kc=... fa=... fb=... rout=... fmin=... fmax=..."
+// "W [banda=<0..2>] pga=<1|5> ka=... kb=... kc=... fa=... fb=...
+//    rout=... fmin=... fmax=..."
+// Sem 'banda=' grava na banda ATIVA — e' o que mantem compativel o
+// assistente antigo, que nao conhecia bandas.
 static void gravaCalibracao(const String &linha) {
   double v;
+
+  uint8_t b = BANDA_ATIVA;
+  if (valorDe(linha, "banda", v)) {
+    if (v < 0.0 || v >= (double)NUM_BANDAS) {
+      Serial.println("# ERRO: W exige banda=0..2");
+      return;
+    }
+    b = (uint8_t)v;
+  }
+
   if (!valorDe(linha, "pga", v) || (v != 1.0 && v != 5.0)) {
     Serial.println("# ERRO: W exige pga=1 ou pga=5");
     return;
   }
-  const bool x5 = (v == 5.0);
-  Calibracao c = x5 ? calX5 : calX1;      // chave ausente mantem o valor
+  const uint8_t p = (v == 5.0) ? IDX_X5 : IDX_X1;
+
+  Calibracao c = cal[b][p];               // chave ausente mantem o valor
   if (valorDe(linha, "ka",   v)) c.ka   = v;
   if (valorDe(linha, "kb",   v)) c.kb   = v;
   if (valorDe(linha, "kc",   v)) c.kc   = v;
@@ -251,30 +406,146 @@ static void gravaCalibracao(const String &linha) {
     return;
   }
 
-  if (x5) calX5 = c; else calX1 = c;
-  ROUT_OHM  = rout;
-  CALIBRADO = true;
-  calDaNvs  = true;
+  cal[b][p]       = c;
+  calValida[b][p] = true;
+  calDeNvs[b][p]  = true;
+  ROUT_OHM        = rout;
 
+  // Cada perfil tem a sua chave, entao nao e' mais preciso reescrever o
+  // par para manter os dois coerentes: o carregador testa cada chave
+  // separadamente.
+  char k[16];
+  chaveCal(b, p, k, sizeof(k));
   nvs.begin(NVS_ESPACO, false);
-  nvs.putBytes(x5 ? "x5" : "x1", &c, sizeof(c));
-  nvs.putBytes(x5 ? "x1" : "x5", x5 ? &calX1 : &calX5, sizeof(c));
+  nvs.putBytes(k, &c, sizeof(c));
   nvs.putDouble("rout", rout);
   nvs.end();
 
-  Serial.print("# CAL gravada: pga=");
-  Serial.println(x5 ? 5 : 1);
+  Serial.print("# CAL gravada: banda=");
+  Serial.print(b);
+  Serial.print(" pga=");
+  Serial.println((p == IDX_X5) ? 5 : 1);
 }
 
 static void apagaCalibracao() {
   nvs.begin(NVS_ESPACO, false);
   nvs.clear();
   nvs.end();
-  calX1     = CAL_FABRICA_X1;
-  calX5     = CAL_FABRICA_X5;
-  ROUT_OHM  = ROUT_FABRICA;
-  calDaNvs  = false;
-  Serial.println("# CAL apagada (voltou aos valores de fabrica)");
+  restauraFabrica();       // bandas, seis perfis, ROUT e banda ativa = 0
+  aplicaClockBanda();      // a banda 0 e' interna: desliga o gerador
+  Serial.println("# CAL apagada: fabrica em todas as bandas, banda 0 ativa");
+}
+
+// ------------------------ BANDAS (comando B) ----------------------
+static void imprimeBanda(uint8_t b) {
+  char l[180];
+  snprintf(l, sizeof(l),
+           "# BAND i=%u mclk=%.12g ext=%d ativa=%d fmin=%.12g fmax=%.12g",
+           (unsigned)b, bandas[b].mclkHz, bandas[b].externo ? 1 : 0,
+           (b == BANDA_ATIVA) ? 1 : 0,
+           fminBanda(bandas[b].mclkHz), fmaxBanda(bandas[b].mclkHz));
+  Serial.println(l);
+}
+
+static void gravaBandas() {
+  nvs.begin(NVS_ESPACO, false);
+  nvs.putBytes("bandas", bandas, sizeof(bandas));
+  nvs.end();
+}
+
+// "B"                            -> lista as tres bandas
+// "B sel=<n>"                    -> torna a banda n ativa (clock + D3)
+// "B i=<n> mclk=<Hz> ext=<0|1>"  -> configura a banda n e grava na NVS
+static void processaBanda(const String &linha) {
+  double v;
+
+  if (valorDe(linha, "sel", v)) {
+    if (v < 0.0 || v >= (double)NUM_BANDAS) {
+      Serial.println("# ERRO: B exige sel=0..2");
+      return;
+    }
+    BANDA_ATIVA = (uint8_t)v;
+    const double antes = bandas[BANDA_ATIVA].mclkHz;
+    aplicaClockBanda();
+    // ledcSetup pode ter corrigido o nominal para a frequencia real do
+    // divisor; se corrigiu, a NVS tem de acompanhar.
+    if (bandas[BANDA_ATIVA].mclkHz != antes) gravaBandas();
+    char l[140];
+    snprintf(l, sizeof(l), "# BAND ativa: i=%u mclk=%.12g ext=%d",
+             (unsigned)BANDA_ATIVA, bandas[BANDA_ATIVA].mclkHz,
+             bandas[BANDA_ATIVA].externo ? 1 : 0);
+    Serial.println(l);
+    return;
+  }
+
+  if (valorDe(linha, "i", v)) {
+    if (v < 0.0 || v >= (double)NUM_BANDAS) {
+      Serial.println("# ERRO: B exige i=0..2");
+      return;
+    }
+    const uint8_t b = (uint8_t)v;
+    double mclk = bandas[b].mclkHz;
+    bool   ext  = bandas[b].externo;
+    if (valorDe(linha, "mclk", v)) mclk = v;
+    if (valorDe(linha, "ext",  v)) ext  = (v != 0.0);
+
+    // Teto do datasheet; o piso e' folgado de proposito (as bandas
+    // lentas sao justamente o motivo desta mudanca).
+    if (!(mclk >= 1000.0) || mclk > 16776000.0) {
+      Serial.println("# ERRO: mclk fora de 1e3 a 16,776e6 Hz, nada gravado");
+      return;
+    }
+
+    if (ext) {
+      // Descobre o MCLK EFETIVO consultando o divisor, mesmo que a banda
+      // nao seja a ativa. Programar o canal nao emite nada por si (o
+      // pino so' e' ligado em aplicaClockBanda); no pior caso ha' um
+      // instante de clock errado no pino, e a chamada logo abaixo
+      // restaura o gerador da banda ativa.
+      const double efet = ledcSetup(CANAL_MCLK, mclk, bitsLedc(mclk));
+      if (!(efet > 0.0)) {
+        // Gravar o nominal quando o LEDC recusou seria pior que recusar
+        // o comando: o pino nao geraria nada e o eixo de frequencia
+        // inteiro passaria a mentir, sem nenhum sinal de erro na medida.
+        Serial.println("# ERRO: LEDC nao sintetiza esse mclk, nada gravado");
+        aplicaClockBanda();      // devolve o gerador a' banda ativa
+        return;
+      }
+      mclk = efet;
+    }
+
+    // Trocar o clock invalida FISICAMENTE os coeficientes da banda:
+    // K(f) e a fase foram levantados com o MCLK antigo. Nao apago (seria
+    // facil perder horas de bancada com um comando digitado errado), mas
+    // aviso — senao a placa volta a emitir ohms plausiveis e errados.
+    if ((mclk != bandas[b].mclkHz || ext != bandas[b].externo) &&
+        (calValida[b][IDX_X1] || calValida[b][IDX_X5])) {
+      Serial.print("# AVISO: banda ");
+      Serial.print(b);
+      Serial.println(" foi calibrada com o clock anterior - recalibre.");
+    }
+
+    bandas[b].mclkHz  = mclk;
+    bandas[b].externo = ext;
+    aplicaClockBanda();          // reprograma o gerador da banda ATIVA
+    gravaBandas();
+
+    // Perfis ainda nao calibrados acompanham a nova faixa fisica.
+    for (uint8_t p = 0; p < 2; p++) {
+      if (!calValida[b][p]) {
+        cal[b][p].fmin = fminBanda(bandas[b].mclkHz);
+        cal[b][p].fmax = fmaxBanda(bandas[b].mclkHz);
+      }
+    }
+
+    char l[140];
+    snprintf(l, sizeof(l), "# BAND ok: i=%u mclk=%.12g ext=%d",
+             (unsigned)b, bandas[b].mclkHz, bandas[b].externo ? 1 : 0);
+    Serial.println(l);
+    return;
+  }
+
+  for (uint8_t b = 0; b < NUM_BANDAS; b++) imprimeBanda(b);
 }
 
 // Convencao de sinal de Z'' do AmostrasFRA (Z'' < 0 p/ capacitivo).
@@ -329,15 +600,49 @@ static uint8_t ctrlHi(uint8_t cmd) {
 static uint8_t ctrlLo(bool reset) {
   uint8_t v = 0;
   if (reset) v |= 0x10;
-  if (USAR_CLOCK_EXTERNO) v |= 0x08;
+  if (clockExterno()) v |= 0x08;   // D3 = usa o clock do PINO_MCLK
   return v;
 }
 
+// A palavra de frequencia e' proporcional a 2^29/MCLK: TEM que usar o
+// MCLK da banda ativa, senao todo o eixo de frequencia do espectro sai
+// deslocado pelo mesmo fator.
 static void escreveFreq(uint8_t reg, double f) {
-  uint32_t code = (uint32_t)((536870912.0 / AD5933_MCLK_HZ) * f);  // 2^29
+  uint32_t code = (uint32_t)((536870912.0 / mclkAtual()) * f);  // 2^29
   escreveReg(reg,     (code >> 16) & 0xFF);
   escreveReg(reg + 1, (code >> 8)  & 0xFF);
   escreveReg(reg + 2,  code        & 0xFF);
+}
+
+// Programa (ou desliga) o gerador de clock da banda ativa e reescreve o
+// bit D3 do registrador 0x81. Chamada em configuraSweep, no setup e ao
+// trocar/configurar banda pelo comando B.
+static void aplicaClockBanda() {
+  Banda &bd = bandas[BANDA_ATIVA];
+  if (!bd.externo) {
+    // Banda interna: solta o pino para nao injetar clock em quem nao
+    // pediu (e para nao deixar o LEDC preso ao GPIO).
+    ledcDetachPin(PINO_MCLK);
+    pinMode(PINO_MCLK, INPUT);
+  } else {
+    const int bits = bitsLedc(bd.mclkHz);
+    // ledcSetup DEVOLVE a frequencia que o divisor consegue sintetizar,
+    // que raramente e' exatamente a pedida. E' esse valor, e nao o
+    // nominal, que vale como MCLK efetivo da banda.
+    const double efetiva = ledcSetup(CANAL_MCLK, bd.mclkHz, bits);
+    if (efetiva > 0.0) {
+      bd.mclkHz = efetiva;
+    } else {
+      // Sem clock no pino. Continuar calculando com o nominal produziria
+      // um espectro inteiro deslocado e com cara de valido — por isso o
+      // erro e' gritado na serial em vez de passar despercebido.
+      Serial.print("# ERRO: LEDC nao sintetizou o MCLK da banda ");
+      Serial.println(BANDA_ATIVA);
+    }
+    ledcAttachPin(PINO_MCLK, CANAL_MCLK);
+    ledcWrite(CANAL_MCLK, 1u << (bits - 1));   // 50 % de razao ciclica
+  }
+  if (chipOk) escreveReg(REG_CTRL_LO, ctrlLo(false));
 }
 
 // ------------------------- AUXILIARES -----------------------------
@@ -375,6 +680,11 @@ static void mostraEstado() {
 static void configuraSweep() {
   uint16_t nIncr = (N_PONTOS > 0) ? (N_PONTOS - 1) : 0;
 
+  // Ponto unico por onde passam a varredura e a excitacao continua:
+  // garante o gerador da banda ativa rodando ANTES de qualquer escrita
+  // de frequencia, ja' que a palavra de FSTART depende do MCLK.
+  aplicaClockBanda();
+
   escreveReg(REG_CTRL_LO, ctrlLo(true));            // reset
   escreveReg(REG_CTRL_HI, ctrlHi(CMD_STANDBY));     // standby
 
@@ -403,13 +713,20 @@ static void converteImpedancia(int16_t re, int16_t im, double f,
 static void executaVarredura() {
 #if !MODO_CALIBRACAO
   // Sem calibracao os ohms sairiam errados por ordens de grandeza, com
-  // toda a aparencia de medida valida — melhor recusar.
+  // toda a aparencia de medida valida — melhor recusar. A verificacao e'
+  // por PERFIL: as bandas 1 e 2 saem de fabrica sem coeficientes, entao
+  // nelas so' o modo bruto roda ate o assistente calibrar.
   // O modo bruto nao converte em ohms, entao nao depende de calibracao —
   // e' justamente ele que a produz.
-  if (!CALIBRADO && !MODO_BRUTO) {
-    Serial.println("# ERRO: firmware nao calibrado.");
-    Serial.println("#       Use o assistente de calibracao do AmostrasFRA.");
-    telas::erro("Nao calibrado");
+  if (!calAtualValida() && !MODO_BRUTO) {
+    Serial.print("# ERRO: banda ");
+    Serial.print(BANDA_ATIVA);
+    Serial.print(" (PGA x");
+    Serial.print(pgaX());
+    Serial.println(") sem calibracao - nao emito ohms.");
+    Serial.println("#       Use o assistente de calibracao do AmostrasFRA");
+    Serial.println("#       ('B sel=' escolhe a banda, 'W banda=' grava).");
+    telas::erro("Banda sem calibracao");
     return;
   }
   if (!MODO_BRUTO) {
@@ -424,9 +741,21 @@ static void executaVarredura() {
   }
 #endif
   if (F_INICIAL < freqMinimaDft()) {
-    Serial.print("# AVISO: f0 abaixo do minimo da DFT (");
+    Serial.print("# AVISO: f0 abaixo do minimo da DFT da banda ");
+    Serial.print(BANDA_ATIVA);
+    Serial.print(" (");
     Serial.print(freqMinimaDft(), 1);
     Serial.println(" Hz) - pontos baixos sem validade.");
+  }
+  // Teto da banda: acima de MCLK/167,76 a palavra de frequencia satura e
+  // o filtro de entrada do AD5933 ja' nao acompanha.
+  const double fFimVarr = F_INICIAL + F_INCREMENTO * (N_PONTOS - 1);
+  if (fFimVarr > fmaxBanda(mclkAtual())) {
+    Serial.print("# AVISO: f final acima do teto da banda ");
+    Serial.print(BANDA_ATIVA);
+    Serial.print(" (");
+    Serial.print(fmaxBanda(mclkAtual()), 1);
+    Serial.println(" Hz) - use 'B sel=' numa banda de MCLK maior.");
   }
 
   // O modo bruto e' de um tiro so': vale para esta varredura e se desarma
@@ -453,7 +782,7 @@ static void executaVarredura() {
     // 10 Hz. Um limite fixo abortaria toda frequencia abaixo de ~100 Hz,
     // por isso ele e' recalculado a cada ponto (o multiplicador D10-D9 do
     // reg. 0x8A esta' em x1; se passar a usa-lo, multiplicar aqui tambem).
-    const double tDftMs = 1000.0 * 16384.0 / AD5933_MCLK_HZ;   // ~0,98 ms
+    const double tDftMs = 1000.0 * 16384.0 / mclkAtual();   // 0,98 ms na banda 0
     const double fEspera = (f > 0.0) ? f : 1.0;
     const uint32_t limiteMs =
         (uint32_t)(2.0 * (1000.0 * CICLOS_ACOMODACAO / fEspera + tDftMs)) + 500;
@@ -605,17 +934,20 @@ static void processaComando(const String &linha) {
   }
 
   // A tolerancia de 5% aceita os 1000 Hz nominais do datasheet, que ficam
-  // pouco abaixo do limite exato (1023,9 Hz com o clock interno). Quando o
-  // clock externo entrar (fase 4), basta ajustar AD5933_MCLK_HZ que o
-  // limite acompanha sozinho.
+  // pouco abaixo do limite exato (1023,9 Hz com o clock interno). O piso
+  // acompanha sozinho a banda ativa: para descer abaixo dele basta
+  // selecionar uma banda de MCLK menor com 'B sel='. ATENCAO A ORDEM: o
+  // 'B sel=' tem que vir ANTES do 'C f0=', senao o f0 baixo e' recusado.
   if (f0 >= 0.95 * freqMinimaDft()) {
     F_INICIAL = f0;
   } else if (f0 > 0) {
     Serial.print("# ERRO: f0=");
     Serial.print(f0, 1);
-    Serial.print(" Hz abaixo do minimo da DFT (");
+    Serial.print(" Hz abaixo do minimo da DFT da banda ");
+    Serial.print(BANDA_ATIVA);
+    Serial.print(" (");
     Serial.print(freqMinimaDft(), 1);
-    Serial.println(" Hz). Exige clock externo mais lento no SMA P5; f0 mantido.");
+    Serial.println(" Hz). Selecione outra banda com 'B sel='; f0 mantido.");
   }
   if (df > 0)               F_INCREMENTO = df;
   if (n >= 2 && n <= 512)   N_PONTOS     = (uint16_t)n;
@@ -656,6 +988,12 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN, I2C_HZ);
   Wire.beginTransmission(ADDR);
   chipOk = (Wire.endTransmission() == 0);
+
+  // Aplica o clock da banda ativa (0 = interno por padrao) so' depois de
+  // o I2C estar de pe: e' aqui que o bit D3 do 0x81 e' escrito pela
+  // primeira vez. Vem depois de telas::inicia(), que ja' tomou o canal 0
+  // do LEDC para o backlight — dai o MCLK usar o canal 2.
+  aplicaClockBanda();
   if (chipOk) {
     Serial.println("# AD5933 detectado em 0x0D. Envie 'S' para varrer, 'T' p/ temperatura.");
   } else {
@@ -675,9 +1013,13 @@ void loop() {
       else if (c == 'C' || c == 'c') processaComando(linha);
       else if (c == 'V' || c == 'v') ligaExcitacao();
       else if (c == 'P' || c == 'p') desligaExcitacao();
+      else if (c == 'B' || c == 'b') processaBanda(linha);
       else if (c == 'G' || c == 'g') {
-        imprimeCal(PGA_x1, calX1);
-        imprimeCal(PGA_x5, calX5);
+        // Seis linhas: uma por (banda, pga).
+        for (uint8_t b = 0; b < NUM_BANDAS; b++) {
+          imprimeCal(b, IDX_X1);
+          imprimeCal(b, IDX_X5);
+        }
       }
       else if (c == 'W' || c == 'w') gravaCalibracao(linha);
       else if (c == 'X' || c == 'x') apagaCalibracao();

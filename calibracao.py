@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from PySide6.QtCore import QTimer
@@ -67,6 +67,252 @@ MAG_ESCALA = 20200.0
 _RE_RAW = re.compile(
     r"#\s*RAW\s+f=([\d.eE+-]+)\s+real=(-?\d+)\s+imag=(-?\d+)"
 )
+
+
+# ---------------------------------------------------------------------------
+# Bandas de varredura (um clock por banda)
+# ---------------------------------------------------------------------------
+#: Quantidade de bandas prevista pelo firmware.
+NUM_BANDAS = 3
+
+#: Piso da banda: ``fmin = MCLK / 16384``. A DFT do AD5933 integra 1024
+#: amostras tomadas a ``MCLK/16``; abaixo desse piso a janela não comporta
+#: um ciclo inteiro da excitação e o par real/imaginário perde sentido.
+FATOR_FMIN = 16384.0
+
+#: Teto da banda: ``fmax = MCLK / 167,76`` — os 100 kHz especificados pelo
+#: fabricante com o clock máximo de 16,776 MHz. Um clock cobre, portanto,
+#: só cerca de 97:1, e é por isso que 100 Hz a 100 kHz exige mais de uma
+#: banda.
+FATOR_FMAX = 167.76
+
+_RE_BANDA = re.compile(
+    r"#\s*BAND\s*(?P<tipo>ok|ativa)?\s*:?\s*"
+    r"i=(?P<i>\d+)\s+mclk=(?P<mclk>[-+\d.eE]+)\s+ext=(?P<ext>[01])"
+    r"(?:\s+ativa=(?P<at>[01]))?"
+    r"(?:\s+fmin=(?P<fmin>[-+\d.eE]+))?"
+    r"(?:\s+fmax=(?P<fmax>[-+\d.eE]+))?"
+)
+
+_RE_CAL = re.compile(
+    r"#\s*CAL\s+(?:banda=(?P<banda>\d+)\s+)?pga=(?P<pga>\d+)\s+(?P<resto>.*)"
+)
+
+_RE_PAR = re.compile(r"(\w+)=(\S+)")
+
+
+def formata_hz(valor: float) -> str:
+    """Escreve uma frequência no múltiplo mais legível.
+
+    Args:
+        valor: Frequência em hertz.
+
+    Returns:
+        Texto com vírgula decimal, como ``"16,78 MHz"`` ou
+        ``"9,766 kHz"``; ``"—"`` quando o valor não é utilizável.
+    """
+    if not np.isfinite(valor) or valor <= 0.0:
+        return "—"
+    if valor >= 1e6:
+        texto = f"{valor / 1e6:.4g} MHz"
+    elif valor >= 1e3:
+        texto = f"{valor / 1e3:.4g} kHz"
+    else:
+        texto = f"{valor:.4g} Hz"
+    return texto.replace(".", ",")
+
+
+@dataclass
+class Banda:
+    """Uma banda de varredura: o clock que a alimenta e sua faixa útil.
+
+    A frequência de excitação do AD5933 é proporcional ao ``MCLK``, então
+    trocar de banda desloca o eixo de frequência inteiro — por isso cada
+    banda tem seu próprio jogo de coeficientes de calibração.
+
+    Attributes:
+        indice: Posição da banda no firmware (0 a ``NUM_BANDAS`` − 1).
+        mclk_hz: Clock efetivo da banda, em hertz.
+        externo: ``True`` quando o clock vem do gerador do ESP32.
+        ativa: ``True`` quando é a banda selecionada na placa.
+        fmin: Piso da faixa útil, em hertz.
+        fmax: Teto da faixa útil, em hertz.
+    """
+
+    indice: int
+    mclk_hz: float
+    externo: bool
+    ativa: bool = False
+    fmin: float = 0.0
+    fmax: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Deduz a faixa útil quando a placa não a informou."""
+        if self.fmin <= 0.0:
+            self.fmin = self.mclk_hz / FATOR_FMIN
+        if self.fmax <= 0.0:
+            self.fmax = self.mclk_hz / FATOR_FMAX
+
+    @property
+    def rotulo(self) -> str:
+        """Descrição de uma linha para combos: clock, origem e faixa."""
+        origem = "externo" if self.externo else "interno"
+        return (
+            f"Banda {self.indice} — MCLK {formata_hz(self.mclk_hz)} "
+            f"({origem}) — {formata_hz(self.fmin)} a "
+            f"{formata_hz(self.fmax)}"
+        )
+
+
+def bandas_padrao() -> List[Banda]:
+    """Bandas de fábrica previstas no firmware.
+
+    Servem apenas de valor provisório enquanto a placa não responde ao
+    comando ``B``: o clock realmente sintetizado nas bandas externas é o
+    que o divisor do gerador do ESP32 consegue produzir, e não o nominal
+    pedido.
+
+    Returns:
+        Lista nova de :class:`Banda`, segura para ser modificada.
+    """
+    return [
+        Banda(0, 16776000.0, False, ativa=True),
+        Banda(1, 1638400.0, True),
+        Banda(2, 163840.0, True),
+    ]
+
+
+def analisa_linha_banda(linha: str) -> Optional[Tuple[str, Banda]]:
+    """Interpreta uma linha ``# BAND`` vinda do firmware.
+
+    Reconhece os três formatos: a listagem
+    ``# BAND i=… mclk=… ext=… ativa=… fmin=… fmax=…``, a confirmação de
+    configuração ``# BAND ok: i=… mclk=… ext=…`` e a troca de banda
+    ``# BAND ativa: i=… mclk=… ext=…``.
+
+    Args:
+        linha: Linha crua recebida pela porta serial.
+
+    Returns:
+        Par ``(tipo, banda)`` com ``tipo`` em ``{"lista", "ok",
+        "ativa"}``, ou ``None`` se a linha não for uma resposta de banda
+        ou vier com números impossíveis.
+    """
+    m = _RE_BANDA.search(linha)
+    if not m:
+        return None
+    try:
+        indice = int(m.group("i"))
+        mclk = float(m.group("mclk"))
+        fmin = float(m.group("fmin") or 0.0)
+        fmax = float(m.group("fmax") or 0.0)
+    except (TypeError, ValueError):
+        logger.warning("Linha de banda ilegível: %s", linha.strip())
+        return None
+    if not np.isfinite(mclk) or mclk <= 0.0:
+        logger.warning("Banda com MCLK inválido: %s", linha.strip())
+        return None
+    tipo = m.group("tipo") or "lista"
+    if m.group("at") is not None:
+        ativa = m.group("at") == "1"
+    else:
+        # 'ok' só confirma a configuração e nada diz sobre estar ativa.
+        ativa = tipo == "ativa"
+    return (
+        tipo,
+        Banda(
+            indice=indice,
+            mclk_hz=mclk,
+            externo=m.group("ext") == "1",
+            ativa=ativa,
+            fmin=max(fmin, 0.0),
+            fmax=max(fmax, 0.0),
+        ),
+    )
+
+
+def analisa_linha_cal(linha: str) -> Optional[Dict[str, object]]:
+    """Interpreta uma linha ``# CAL`` do firmware.
+
+    Aceita tanto o formato novo, com ``banda=``, quanto o antigo (uma
+    linha por PGA, sem banda), que passa a valer para a banda ativa. A
+    confirmação ``# CAL gravada: …`` não casa de propósito: ela não
+    carrega coeficientes.
+
+    Args:
+        linha: Linha crua recebida pela porta serial.
+
+    Returns:
+        Dicionário com ``banda`` (``None`` no formato antigo), ``pga``,
+        ``origem`` e os coeficientes numéricos encontrados; ``None`` se a
+        linha não for uma resposta de calibração.
+    """
+    m = _RE_CAL.search(linha)
+    if not m:
+        return None
+    try:
+        dados: Dict[str, object] = {
+            "banda": int(m.group("banda")) if m.group("banda") else None,
+            "pga": int(m.group("pga")),
+            "origem": "",
+        }
+    except ValueError:
+        logger.warning("Linha de calibração ilegível: %s", linha.strip())
+        return None
+    for chave, valor in _RE_PAR.findall(m.group("resto")):
+        if chave == "origem":
+            dados["origem"] = valor
+            continue
+        try:
+            dados[chave] = float(valor)
+        except ValueError:
+            continue
+    return dados
+
+
+def valida_faixa(
+    banda: Optional[Banda], f0: float, f1: float
+) -> Optional[str]:
+    """Confere se a faixa de frequência pedida cabe na banda escolhida.
+
+    Args:
+        banda: Banda selecionada, ou ``None`` se ainda desconhecida.
+        f0: Frequência inicial pedida, em hertz.
+        f1: Frequência final pedida, em hertz.
+
+    Returns:
+        Texto explicando o extrapolamento e de onde vêm os limites, ou
+        ``None`` se a faixa couber (ou se não houver como julgar).
+    """
+    if banda is None or banda.fmin <= 0.0 or banda.fmax <= 0.0:
+        return None
+    problemas = []
+    if f0 < banda.fmin:
+        problemas.append(
+            f"a frequência inicial ({formata_hz(f0)}) fica abaixo do piso "
+            f"de {formata_hz(banda.fmin)}"
+        )
+    if f1 > banda.fmax:
+        problemas.append(
+            f"a frequência final ({formata_hz(f1)}) passa do teto de "
+            f"{formata_hz(banda.fmax)}"
+        )
+    if not problemas:
+        return None
+    return (
+        f"A faixa pedida extrapola a banda {banda.indice} "
+        f"(MCLK {formata_hz(banda.mclk_hz)}): "
+        + " e ".join(problemas)
+        + ".\n\n"
+        "Uma banda cobre cerca de 97:1, e os dois limites saem do clock:\n"
+        "• piso = MCLK / 16384 — a DFT integra 1024 amostras tomadas a "
+        "MCLK/16, então abaixo do piso a janela não comporta um ciclo "
+        "inteiro da excitação;\n"
+        "• teto = MCLK / 167,76 — é o limite especificado pelo fabricante "
+        "(100 kHz com o clock máximo de 16,776 MHz).\n\n"
+        "Escolha outra banda ou reduza a faixa: os pontos fora dos limites "
+        "não seriam medida, e sim ruído."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -130,24 +376,53 @@ class Resultado:
     reconstrucoes: List[tuple]  # (alvo, média medida, erro % rms)
     rout_medido: bool           # False quando veio de calibração anterior
 
-    def comando_w(self, pga: int) -> str:
-        """Monta o comando serial que grava esta calibração na placa."""
+    def comando_w(self, pga: int, banda: Optional[int] = None) -> str:
+        """Monta o comando serial que grava esta calibração na placa.
+
+        Args:
+            pga: Ganho do PGA (1 ou 5) a que os coeficientes pertencem.
+            banda: Índice da banda. ``None`` omite ``banda=`` e deixa o
+                firmware usar a banda ativa, como no formato antigo.
+
+        Returns:
+            Linha pronta para ``send_text``.
+        """
+        alvo = "" if banda is None else f"banda={banda} "
         return (
-            f"W pga={pga} ka={self.ka:.12g} kb={self.kb:.12g} "
+            f"W {alvo}pga={pga} ka={self.ka:.12g} kb={self.kb:.12g} "
             f"kc={self.kc:.12g} fa={self.fa:.12g} fb={self.fb:.12g} "
             f"rout={self.rout:.12g} fmin={self.fmin:.12g} "
             f"fmax={self.fmax:.12g}"
         )
 
-    def trecho_cpp(self, pga: int) -> str:
-        """Mesmos coeficientes no formato do firmware, para colar no fonte."""
+    def trecho_cpp(self, pga: int, banda: Optional[int] = None) -> str:
+        """Mesmos coeficientes no formato do firmware, para colar no fonte.
+
+        Args:
+            pga: Ganho do PGA (1 ou 5).
+            banda: Índice da banda, usado no nome da constante — cada
+                banda tem seu próprio jogo de coeficientes. ``None``
+                mantém o nome antigo, sem banda.
+
+        Returns:
+            Trecho em C++ para colar em ``src/main.cpp`` (adapte o nome do
+            símbolo ao que o firmware usar).
+        """
         nome = "X5" if pga == 5 else "X1"
+        if banda is None:
+            simbolo = f"CAL_FABRICA_{nome}"
+            cabecalho = f"// banda ativa, PGA {nome}"
+        else:
+            simbolo = f"CAL_FABRICA_B{banda}_{nome}"
+            cabecalho = f"// banda {banda}, PGA {nome}"
         return (
-            f"static const Calibracao CAL_FABRICA_{nome} = {{\n"
+            f"{cabecalho}\n"
+            f"static const Calibracao {simbolo} = {{\n"
             f"  {self.ka: .12e}, {self.kb: .12e}, {self.kc: .12e},\n"
             f"  {self.fa: .12e}, {self.fb: .12e}, "
             f"{self.fmin:.1f}, {self.fmax:.1f}\n"
             f"}};\n"
+            f"// ROUT é do chip: vale para todas as bandas e ganhos.\n"
             f"static const double ROUT_FABRICA = {self.rout:.6f};"
         )
 
@@ -317,12 +592,27 @@ class CalibracaoDialog(QDialog):
         self._n_esperado = 0
         self._respostas: List[str] = []
         self._watchdog: Optional[QTimer] = None
+        #: Bandas conhecidas, por índice. Começam nos valores provisórios
+        #: do firmware e são substituídas pelo que a placa responde ao 'B'.
+        self._bandas: Dict[int, Banda] = {
+            b.indice: b for b in bandas_padrao()
+        }
+        #: Perfis de calibração lidos do 'G', por (banda, pga).
+        self._perfis: Dict[Tuple[int, int], Dict[str, object]] = {}
+        #: Banda cujas frequências já foram sugeridas (evita sobrescrever
+        #: o que o usuário digitou a cada resposta da placa).
+        self._banda_sugerida: Optional[int] = None
+        #: True depois que o usuário escolhe uma banda à mão. Até lá o
+        #: combo segue a banda ativa que a placa reportar.
+        self._banda_travada = False
 
         self._monta_interface()
         self._aq.rawLineReceived.connect(self._on_linha)
-        # Pergunta a calibração vigente: é dela que sai o ROUT quando o
-        # usuário calibra só uma subfaixa adicional.
-        self._aq.send_text("G")
+        # Pergunta como as bandas estão configuradas e qual é a calibração
+        # vigente: é dela que sai o ROUT quando o usuário calibra só uma
+        # subfaixa adicional.
+        self._aq.send_text("B")
+        QTimer.singleShot(300, lambda: self._aq.send_text("G"))
         self._atualiza_navegacao()
 
     # -- construção da interface ---------------------------------------
@@ -409,10 +699,23 @@ class CalibracaoDialog(QDialog):
               <li>a placa conectada, com a amostra fora do circuito.</li>
             </ul>
 
+            <h3>Por que existe uma calibração por banda</h3>
+            <p>A frequência de excitação do AD5933 é <b>proporcional ao
+            clock</b> (<code>MCLK</code>), e um clock só cobre cerca de
+            <b>97:1</b>: o piso é <code>MCLK/16384</code> e o teto é
+            <code>MCLK/167,76</code>. Para chegar de 100&nbsp;Hz a
+            100&nbsp;kHz a varredura é dividida em <b>bandas</b>, cada uma
+            com seu clock — nas bandas externas quem gera o clock é o
+            ESP32. Como o caminho analógico responde de outro jeito em
+            cada banda, <b>cada banda tem seu próprio jogo de
+            coeficientes</b>: escolha no passo seguinte qual delas você
+            está calibrando.</p>
+
             <p><b>Importante:</b> a calibração vale para uma combinação
             específica de resistor de transimpedância, faixa de excitação,
-            ganho do PGA e clock. Trocar qualquer um deles exige
-            recalibrar.</p>
+            ganho do PGA e banda (clock). Trocar qualquer um deles exige
+            recalibrar. O <code>ROUT</code>, ao contrário, é do chip: vale
+            para todas as bandas e ganhos.</p>
             """
         )
         lay.addWidget(texto)
@@ -428,6 +731,27 @@ class CalibracaoDialog(QDialog):
         )
         aviso.setWordWrap(True)
         lay.addWidget(aviso)
+
+        grupo_banda = QGroupBox("Banda de varredura", w)
+        coluna_banda = QVBoxLayout(grupo_banda)
+        self.banda_combo = QComboBox(grupo_banda)
+        self.banda_combo.setToolTip(
+            "Cada banda é um clock (MCLK) diferente para o AD5933. Um\n"
+            "clock só cobre cerca de 97:1 — piso = MCLK/16384, teto =\n"
+            "MCLK/167,76 —, então 100 Hz a 100 kHz é coberto por bandas,\n"
+            "e cada banda tem sua própria calibração."
+        )
+        self.banda_combo.currentIndexChanged.connect(self._on_banda_alterada)
+        # 'activated' só é emitido quando quem troca é o usuário;
+        # 'currentIndexChanged' também dispara ao repovoar o combo.
+        self.banda_combo.activated.connect(self._on_banda_escolhida)
+        coluna_banda.addWidget(self.banda_combo)
+        self.banda_info = QLabel("", grupo_banda)
+        self.banda_info.setWordWrap(True)
+        self.banda_info.setStyleSheet("color: #9a9a9a;")
+        coluna_banda.addWidget(self.banda_info)
+        lay.addWidget(grupo_banda)
+
 
         grupo = QGroupBox("Configuração da varredura", w)
         grade = QGridLayout(grupo)
@@ -460,8 +784,8 @@ class CalibracaoDialog(QDialog):
         self.f0_spin.setValue(2000.0)
         self.f0_spin.setSuffix(" Hz")
         self.f0_spin.setToolTip(
-            "Com o clock interno, abaixo de ~1 kHz a janela da DFT não\n"
-            "comporta um ciclo inteiro e o dado perde sentido."
+            "O piso de cada banda é MCLK/16384: abaixo dele a janela da\n"
+            "DFT não comporta um ciclo inteiro e o dado perde sentido."
         )
 
         self.f1_spin = QDoubleSpinBox(grupo)
@@ -498,6 +822,9 @@ class CalibracaoDialog(QDialog):
             grade.addWidget(widget, i // 2, (i % 2) * 2 + 1)
         lay.addWidget(grupo)
         lay.addStretch(1)
+        # Só aqui, com os campos de frequência já criados: preencher o
+        # combo dispara o ajuste das sugestões de faixa.
+        self._atualiza_combo_bandas()
         return w
 
     def _pagina_padrao(self, indice: int) -> QWidget:
@@ -581,6 +908,206 @@ class CalibracaoDialog(QDialog):
         lay.addLayout(linha)
         return w
 
+    # -- bandas ---------------------------------------------------------
+    def _atualiza_combo_bandas(self) -> None:
+        """Repovoa o combo de bandas com o que se sabe da placa.
+
+        Enquanto o usuário não escolher uma banda à mão, o combo **segue
+        a banda ativa na placa** — assim a janela não fica apontando para
+        a banda 0 enquanto o instrumento está em outra. Depois da
+        primeira escolha manual (``_banda_travada``), a seleção do
+        usuário é preservada a cada nova resposta ao ``B``.
+        """
+        if not hasattr(self, "banda_combo"):
+            return
+        anterior = self.banda_combo.currentData()
+        bloqueado = self.banda_combo.blockSignals(True)
+        self.banda_combo.clear()
+        for banda in sorted(self._bandas.values(), key=lambda b: b.indice):
+            self.banda_combo.addItem(banda.rotulo, banda.indice)
+        self.banda_combo.blockSignals(bloqueado)
+        if self.banda_combo.count() == 0:
+            self._atualiza_info_banda()
+            return
+        indice = -1
+        if self._banda_travada:
+            indice = self.banda_combo.findData(anterior)
+        if indice < 0:
+            ativa = next(
+                (b.indice for b in self._bandas.values() if b.ativa), None
+            )
+            indice = self.banda_combo.findData(ativa)
+        if indice < 0:
+            indice = max(0, self.banda_combo.findData(anterior))
+        self.banda_combo.setCurrentIndex(indice)
+        # setCurrentIndex não emite sinal quando o índice não muda, e o
+        # rótulo pode ter mudado mesmo assim: atualiza à mão.
+        self._on_banda_alterada()
+
+    def _banda_selecionada(self) -> Optional[Banda]:
+        """Banda escolhida no combo, ou ``None`` se nenhuma é conhecida."""
+        if not hasattr(self, "banda_combo"):
+            return None
+        return self._bandas.get(self.banda_combo.currentData())
+
+    def _on_banda_escolhida(self, _indice: int = -1) -> None:
+        """Marca a banda como escolha explícita do usuário.
+
+        A partir daqui as respostas ao comando ``B`` não movem mais o
+        combo: quem manda é o que o usuário selecionou.
+
+        Args:
+            _indice: Índice do combo (ignorado; vem do sinal do Qt).
+        """
+        self._banda_travada = True
+
+    def _on_banda_alterada(self, _indice: int = -1) -> None:
+        """Reage à troca de banda ajustando a faixa sugerida.
+
+        Args:
+            _indice: Índice do combo (ignorado; vem do sinal do Qt).
+        """
+        banda = self._banda_selecionada()
+        self._atualiza_info_banda()
+        if banda is None or banda.indice == self._banda_sugerida:
+            return
+        self._banda_sugerida = banda.indice
+        self._sugere_frequencias(banda)
+
+    def _sugere_frequencias(self, banda: Banda) -> None:
+        """Ajusta os campos de frequência aos limites da banda.
+
+        A sugestão começa no **dobro** do piso: exatamente no piso a DFT
+        enxerga um único ciclo da excitação e o ponto fica marginal. O
+        topo é o próprio teto, arredondado para baixo para a casa decimal
+        do campo não estourá-lo.
+
+        Args:
+            banda: Banda recém-escolhida.
+        """
+        if not hasattr(self, "f0_spin") or banda.fmin <= 0.0:
+            return
+        f0 = round(min(2.0 * banda.fmin, banda.fmax), 1)
+        f1 = float(np.floor(banda.fmax * 10.0) / 10.0)
+        if not np.isfinite(f0) or not np.isfinite(f1) or f1 <= f0:
+            logger.warning(
+                "Banda %d sem faixa utilizável (%.4g a %.4g Hz).",
+                banda.indice,
+                banda.fmin,
+                banda.fmax,
+            )
+            self.banda_info.setText(
+                f"<b>Banda {banda.indice} sem faixa utilizável</b> "
+                f"({formata_hz(banda.fmin)} a {formata_hz(banda.fmax)}). "
+                "Confira o MCLK configurado para ela."
+            )
+            return
+        self.f0_spin.setValue(
+            min(max(f0, self.f0_spin.minimum()), self.f0_spin.maximum())
+        )
+        self.f1_spin.setValue(
+            min(max(f1, self.f1_spin.minimum()), self.f1_spin.maximum())
+        )
+
+    def _tem_calibracao(self, banda: int, pga: int) -> bool:
+        """Diz se a placa já reportou coeficientes para ``(banda, pga)``.
+
+        Um perfil de banda nunca calibrada volta do firmware com a faixa
+        zerada e os coeficientes de ganho nulos; exigimos as duas coisas
+        para não confundir um perfil vazio com um perfil real.
+
+        Args:
+            banda: Índice da banda.
+            pga: Ganho do PGA (1 ou 5).
+
+        Returns:
+            ``True`` se houver coeficientes utilizáveis.
+        """
+        perfil = self._perfis.get((banda, pga))
+        if perfil is None:
+            return False
+        fmax = perfil.get("fmax")
+        if not isinstance(fmax, float) or fmax <= 0.0:
+            return False
+        return any(
+            isinstance(perfil.get(chave), float) and perfil[chave] != 0.0
+            for chave in ("ka", "kb", "kc")
+        )
+
+    def _atualiza_info_banda(self) -> None:
+        """Descreve a banda escolhida e o estado da calibração dela."""
+        if not hasattr(self, "banda_info"):
+            return
+        banda = self._banda_selecionada()
+        if banda is None:
+            self.banda_info.setText(
+                "A placa ainda não informou as bandas (comando <b>B</b>). "
+                "Confira a conexão e se o firmware é recente o bastante."
+            )
+            return
+        origem = (
+            "clock gerado pelo ESP32"
+            if banda.externo
+            else "oscilador interno do chip"
+        )
+        texto = (
+            f"MCLK de {formata_hz(banda.mclk_hz)} ({origem}). Faixa útil de "
+            f"<b>{formata_hz(banda.fmin)}</b> (piso = MCLK/16384) a "
+            f"<b>{formata_hz(banda.fmax)}</b> (teto = MCLK/167,76). "
+            "A banda é aplicada à placa ao medir e ao gravar."
+        )
+        pendentes = [
+            f"x{pga}"
+            for pga in (1, 5)
+            if not self._tem_calibracao(banda.indice, pga)
+        ]
+        if pendentes:
+            texto += (
+                "<br><b>Esta banda ainda não está calibrada</b> para o PGA "
+                + " e ".join(pendentes)
+                + " — enquanto isso o firmware recusa a varredura nela, "
+                "para não emitir ohms sem calibração."
+            )
+        self.banda_info.setText(texto)
+
+    def _registra_banda(self, texto: str) -> None:
+        """Atualiza a tabela de bandas com uma resposta ``# BAND``.
+
+        Args:
+            texto: Linha já sem espaços nas pontas.
+        """
+        analisada = analisa_linha_banda(texto)
+        if analisada is None:
+            return
+        tipo, banda = analisada
+        if banda.ativa:
+            for outra in self._bandas.values():
+                outra.ativa = False
+        elif tipo != "lista" and banda.indice in self._bandas:
+            # 'ok' não fala de banda ativa: preserva o que já se sabia.
+            banda.ativa = self._bandas[banda.indice].ativa
+        self._bandas[banda.indice] = banda
+        self._atualiza_combo_bandas()
+
+    def _registra_cal(self, texto: str) -> None:
+        """Guarda um perfil de calibração informado pelo comando ``G``.
+
+        Args:
+            texto: Linha já sem espaços nas pontas.
+        """
+        dados = analisa_linha_cal(texto)
+        if dados is None:
+            return
+        banda = dados.get("banda")
+        if banda is None:
+            # Formato antigo, sem banda=: vale para a banda ativa.
+            banda = next(
+                (b.indice for b in self._bandas.values() if b.ativa), 0
+            )
+        self._perfis[(int(banda), int(dados["pga"]))] = dados
+        self._atualiza_info_banda()
+
+
     # -- navegação ------------------------------------------------------
     def _atualiza_navegacao(self) -> None:
         i = self.paginas.currentIndex()
@@ -642,6 +1169,19 @@ class CalibracaoDialog(QDialog):
                 "A frequência final deve ser maior que a inicial.",
             )
             return
+        banda = self._banda_selecionada()
+        aviso_faixa = valida_faixa(banda, f0, f1)
+        if aviso_faixa is not None:
+            resposta = QMessageBox.question(
+                self,
+                "Faixa fora da banda",
+                aviso_faixa + "\n\nMedir assim mesmo?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if resposta != QMessageBox.StandardButton.Yes:
+                return
         n = int(self.n_spin.value())
         df = (f1 - f0) / (n - 1)
         pga = int(self.pga_combo.currentData())
@@ -658,6 +1198,14 @@ class CalibracaoDialog(QDialog):
         estado.setText("Medindo…")
         self._atualiza_navegacao()
 
+        # A banda tem de ser aplicada ANTES da configuração: é o MCLK que
+        # define a palavra de frequência calculada para f0 e df. As duas
+        # linhas vão juntas de propósito — o protocolo é orientado a linha
+        # e o firmware drena o buffer da serial em ordem; um temporizador
+        # entre elas só criaria uma corrida se o usuário clicasse duas
+        # vezes em "Medir padrão".
+        if banda is not None:
+            self._aq.send_text(f"B sel={banda.indice}")
         self._aq.send_text(
             f"C f0={f0:.3f} df={df:.6f} n={n} vpp={vpp} pga={pga} "
             f"st={st} dly=0 raw=1"
@@ -683,6 +1231,9 @@ class CalibracaoDialog(QDialog):
         texto = linha.strip()
         if texto.startswith("# CAL") or texto.startswith("# ERRO"):
             self._respostas.append(texto)
+            self._registra_cal(texto)
+        elif texto.startswith("# BAND"):
+            self._registra_banda(texto)
         if not self._coletando:
             return
         m = _RE_RAW.match(texto)
@@ -741,7 +1292,24 @@ class CalibracaoDialog(QDialog):
 
     # -- cálculo e gravação ---------------------------------------------
     def _rout_da_placa(self) -> Optional[float]:
-        """Lê o ROUT da calibração já gravada, se houver."""
+        """Lê o ROUT da calibração já gravada, se houver.
+
+        O ``ROUT`` é do chip: não depende da banda nem do ganho, então
+        qualquer perfil informado pelo comando ``G`` serve. A varredura
+        pelas linhas cruas fica de reserva, para firmwares antigos.
+
+        Returns:
+            Resistência de saída em ohm, ou ``None`` se a placa não a
+            informou.
+        """
+        for perfil in reversed(list(self._perfis.values())):
+            valor = perfil.get("rout")
+            if (
+                isinstance(valor, float)
+                and np.isfinite(valor)
+                and valor > 0.0
+            ):
+                return valor
         for linha in reversed(self._respostas):
             m = re.search(r"rout=([\d.eE+-]+)", linha)
             if m:
@@ -832,11 +1400,18 @@ class CalibracaoDialog(QDialog):
         self.resultado_canvas.draw()
 
     def _grava_na_placa(self) -> None:
+        """Grava os coeficientes no perfil (banda, PGA) escolhido."""
         if self._resultado is None:
             return
         pga = int(self.pga_combo.currentData())
+        banda = self._banda_selecionada()
+        indice = None if banda is None else banda.indice
         self._respostas = []
-        self._aq.send_text(self._resultado.comando_w(pga))
+        if indice is not None:
+            # A placa fica na banda calibrada logo após gravar, que é o
+            # estado em que o usuário vai conferir com o terceiro padrão.
+            self._aq.send_text(f"B sel={indice}")
+        self._aq.send_text(self._resultado.comando_w(pga, indice))
         QTimer.singleShot(500, lambda: self._aq.send_text("G"))
         QTimer.singleShot(1200, self._confere_gravacao)
 
@@ -867,7 +1442,12 @@ class CalibracaoDialog(QDialog):
         if self._resultado is None:
             return
         pga = int(self.pga_combo.currentData())
-        QGuiApplication.clipboard().setText(self._resultado.trecho_cpp(pga))
+        banda = self._banda_selecionada()
+        QGuiApplication.clipboard().setText(
+            self._resultado.trecho_cpp(
+                pga, None if banda is None else banda.indice
+            )
+        )
         QMessageBox.information(
             self,
             "Coeficientes copiados",
@@ -879,12 +1459,19 @@ class CalibracaoDialog(QDialog):
         resposta = QMessageBox.question(
             self,
             "Restaurar calibração de fábrica",
-            "Isso apaga a calibração gravada na placa e volta aos "
-            "coeficientes compilados no firmware. Continuar?",
+            "Isso apaga a calibração gravada na placa — de <b>todas as "
+            "bandas e ganhos</b> — e volta aos coeficientes compilados no "
+            "firmware. Só a banda 0 vem calibrada de fábrica; as bandas "
+            "externas ficarão sem calibração até você refazê-la, e o "
+            "firmware recusará a varredura nelas. Continuar?",
         )
         if resposta != QMessageBox.StandardButton.Yes:
             return
         self._aq.send_text("X")
+        # O que estava em memória virou mentira: relê tudo do zero, senão
+        # o aviso "esta banda ainda não está calibrada" fica desatualizado.
+        self._perfis.clear()
+        QTimer.singleShot(400, lambda: self._aq.send_text("G"))
 
     # -- ciclo de vida ---------------------------------------------------
     def closeEvent(self, event) -> None:  # noqa: N802 (API do Qt)

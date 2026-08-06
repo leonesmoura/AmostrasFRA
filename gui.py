@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtSerialPort import QSerialPort
 from PySide6.QtGui import (
     QAction,
@@ -2492,6 +2492,14 @@ class SerialDialog(QDialog):
         #: Linhas canônicas acumuladas (7 colunas).
         self._rows: list[list[Optional[float]]] = []
 
+        #: Bandas de varredura conhecidas, por índice (``calibracao.Banda``).
+        #: Começam nos valores provisórios do firmware e são trocadas pelo
+        #: que a placa responde ao comando 'B'.
+        self._bandas: dict = {}
+        #: True depois que o usuário escolhe uma banda à mão. Até lá o
+        #: combo segue a banda ativa que a placa reportar.
+        self._banda_travada = False
+
         # -- Conexão ------------------------------------------------------
         self.port_combo = QComboBox(self)
         self.port_combo.setMinimumWidth(220)
@@ -2652,10 +2660,40 @@ class SerialDialog(QDialog):
             self.ad5933_group = QGroupBox(
                 "Configuração da varredura (AD5933)", self
             )
+            self.ad_banda_combo = QComboBox(self)
+            self.ad_banda_combo.setMinimumWidth(320)
+            self.ad_banda_combo.setToolTip(
+                "Cada banda é um clock (MCLK) diferente para o AD5933.\n"
+                "Um clock só cobre cerca de 97:1 — piso = MCLK/16384,\n"
+                "teto = MCLK/167,76 —, então a faixa de 100 Hz a 100 kHz\n"
+                "é coberta por bandas. Cada banda tem sua própria\n"
+                "calibração; nas externas quem gera o clock é o ESP32."
+            )
+            self.ad_banda_combo.currentIndexChanged.connect(
+                lambda _indice: self._atualiza_info_banda()
+            )
+            # 'activated' só é emitido quando quem troca é o usuário;
+            # 'currentIndexChanged' também dispara ao repovoar o combo.
+            self.ad_banda_combo.activated.connect(self._on_banda_escolhida)
+            self.ad_banda_button = QPushButton("Aplicar banda", self)
+            self.ad_banda_button.setToolTip(
+                "Envia 'B sel=' à placa: troca o clock, liga ou desliga o\n"
+                "gerador do ESP32 e passa a valer a calibração da banda."
+            )
+            self.ad_banda_button.clicked.connect(self._aplica_banda)
+            self.ad_banda_info = QLabel("", self)
+            self.ad_banda_info.setWordWrap(True)
+            self.ad_banda_info.setStyleSheet("color: #9a9a9a;")
+            self._preenche_bandas_padrao()
+
             self.ad_fstart = QDoubleSpinBox(self)
             self.ad_fstart.setRange(1.0, 200000.0)
             self.ad_fstart.setDecimals(1)
-            self.ad_fstart.setValue(1000.0)
+            # 1000 Hz ficaria ABAIXO do piso da banda 0 (16,776 MHz /
+            # 16384 = 1023,9 Hz) e dispararia o aviso de faixa já na
+            # configuração de fábrica. 2 kHz é o início da faixa em que a
+            # banda 0 foi calibrada (2 a 100 kHz).
+            self.ad_fstart.setValue(2000.0)
             self.ad_fstart.setSuffix(" Hz")
             self.ad_fstop = QDoubleSpinBox(self)
             self.ad_fstop.setRange(1.0, 200000.0)
@@ -2705,18 +2743,21 @@ class SerialDialog(QDialog):
             self.ad_temp_button.clicked.connect(self._read_ad5933_temp)
 
             grid = QGridLayout(self.ad5933_group)
-            grid.addWidget(QLabel("Freq. inicial:", self), 0, 0)
-            grid.addWidget(self.ad_fstart, 0, 1)
-            grid.addWidget(QLabel("Freq. final:", self), 0, 2)
-            grid.addWidget(self.ad_fstop, 0, 3)
-            grid.addWidget(QLabel("Nº de pontos:", self), 0, 4)
-            grid.addWidget(self.ad_npts, 0, 5)
-            grid.addWidget(QLabel("Excitação:", self), 1, 0)
-            grid.addWidget(self.ad_range_combo, 1, 1)
-            grid.addWidget(QLabel("Ganho PGA:", self), 1, 2)
-            grid.addWidget(self.ad_pga_combo, 1, 3)
-            grid.addWidget(QLabel("Acomodação:", self), 1, 4)
-            grid.addWidget(self.ad_settle, 1, 5)
+            grid.addWidget(QLabel("Banda:", self), 0, 0)
+            grid.addWidget(self.ad_banda_combo, 0, 1, 1, 3)
+            grid.addWidget(self.ad_banda_button, 0, 4, 1, 2)
+            grid.addWidget(QLabel("Freq. inicial:", self), 1, 0)
+            grid.addWidget(self.ad_fstart, 1, 1)
+            grid.addWidget(QLabel("Freq. final:", self), 1, 2)
+            grid.addWidget(self.ad_fstop, 1, 3)
+            grid.addWidget(QLabel("Nº de pontos:", self), 1, 4)
+            grid.addWidget(self.ad_npts, 1, 5)
+            grid.addWidget(QLabel("Excitação:", self), 2, 0)
+            grid.addWidget(self.ad_range_combo, 2, 1)
+            grid.addWidget(QLabel("Ganho PGA:", self), 2, 2)
+            grid.addWidget(self.ad_pga_combo, 2, 3)
+            grid.addWidget(QLabel("Acomodação:", self), 2, 4)
+            grid.addWidget(self.ad_settle, 2, 5)
             self.ad_calib_button = QPushButton(
                 "Calibrar instrumento...", self
             )
@@ -2726,12 +2767,13 @@ class SerialDialog(QDialog):
                 "os coeficientes na memória da placa."
             )
             self.ad_calib_button.clicked.connect(self._open_calibracao)
-            grid.addWidget(QLabel("Pausa p/ leitura:", self), 2, 0)
-            grid.addWidget(self.ad_delay, 2, 1)
-            grid.addWidget(self.ad_calib_button, 2, 3)
-            grid.addWidget(self.ad_config_button, 3, 1)
-            grid.addWidget(self.ad_sweep_button, 3, 3)
-            grid.addWidget(self.ad_temp_button, 3, 5)
+            grid.addWidget(QLabel("Pausa p/ leitura:", self), 3, 0)
+            grid.addWidget(self.ad_delay, 3, 1)
+            grid.addWidget(self.ad_calib_button, 3, 3)
+            grid.addWidget(self.ad_config_button, 4, 1)
+            grid.addWidget(self.ad_sweep_button, 4, 3)
+            grid.addWidget(self.ad_temp_button, 4, 5)
+            grid.addWidget(self.ad_banda_info, 5, 0, 1, 6)
 
         # -- Layout -------------------------------------------------------
         conn_row = QHBoxLayout()
@@ -2812,6 +2854,160 @@ class SerialDialog(QDialog):
         dialogo = CalibracaoDialog(self, self._acq)
         dialogo.exec()
 
+    # -- Bandas de varredura -------------------------------------------------
+    def _preenche_bandas_padrao(self) -> None:
+        """Popula o combo com as bandas previstas no firmware.
+
+        São só um valor provisório, para a janela não abrir vazia: os
+        números que valem são os que a placa responde ao comando ``B``,
+        pedido assim que a porta abre. Nas bandas externas o MCLK efetivo
+        é o que o divisor do gerador do ESP32 conseguiu sintetizar, e não
+        o nominal — usar o nominal deslocaria o eixo de frequência todo.
+        """
+        from calibracao import bandas_padrao
+
+        self._bandas = {b.indice: b for b in bandas_padrao()}
+        self._atualiza_combo_bandas()
+
+    def _atualiza_combo_bandas(self) -> None:
+        """Repovoa o combo de bandas com o que se sabe da placa.
+
+        Enquanto o usuário não escolher uma banda à mão, o combo **segue
+        a banda ativa na placa**; depois disso (``_banda_travada``) a
+        escolha dele é preservada a cada nova resposta ao ``B``.
+        """
+        if self.mode != "ad5933":
+            return
+        anterior = self.ad_banda_combo.currentData()
+        bloqueado = self.ad_banda_combo.blockSignals(True)
+        self.ad_banda_combo.clear()
+        for banda in sorted(self._bandas.values(), key=lambda b: b.indice):
+            self.ad_banda_combo.addItem(banda.rotulo, banda.indice)
+        self.ad_banda_combo.blockSignals(bloqueado)
+        if self.ad_banda_combo.count() == 0:
+            self._atualiza_info_banda()
+            return
+        indice = -1
+        if self._banda_travada:
+            indice = self.ad_banda_combo.findData(anterior)
+        if indice < 0:
+            ativa = next(
+                (b.indice for b in self._bandas.values() if b.ativa), None
+            )
+            indice = self.ad_banda_combo.findData(ativa)
+        if indice < 0:
+            indice = max(0, self.ad_banda_combo.findData(anterior))
+        self.ad_banda_combo.setCurrentIndex(indice)
+        self._atualiza_info_banda()
+
+    def _banda_selecionada(self):
+        """Banda escolhida no combo.
+
+        Returns:
+            ``calibracao.Banda`` correspondente, ou ``None`` fora do modo
+            AD5933 ou enquanto nenhuma banda é conhecida.
+        """
+        if self.mode != "ad5933":
+            return None
+        return self._bandas.get(self.ad_banda_combo.currentData())
+
+    def _on_banda_escolhida(self, _indice: int = -1) -> None:
+        """Marca a banda como escolha explícita do usuário.
+
+        A partir daqui as respostas ao comando ``B`` não movem mais o
+        combo: quem manda é o que o usuário selecionou.
+
+        Args:
+            _indice: Índice do combo (ignorado; vem do sinal do Qt).
+        """
+        self._banda_travada = True
+        self._atualiza_info_banda()
+
+    def _atualiza_info_banda(self) -> None:
+        """Descreve a banda escolhida e diz qual está ativa na placa."""
+        if self.mode != "ad5933":
+            return
+        banda = self._banda_selecionada()
+        if banda is None:
+            self.ad_banda_info.setText(
+                "A placa ainda não informou as bandas — conecte-se e "
+                "aguarde a resposta ao comando B."
+            )
+            return
+        from calibracao import formata_hz
+
+        origem = (
+            "clock gerado pelo ESP32"
+            if banda.externo
+            else "oscilador interno do chip"
+        )
+        texto = (
+            f"MCLK de {formata_hz(banda.mclk_hz)} ({origem}); faixa útil de "
+            f"{formata_hz(banda.fmin)} (piso = MCLK/16384) a "
+            f"{formata_hz(banda.fmax)} (teto = MCLK/167,76)."
+        )
+        ativa = next((b for b in self._bandas.values() if b.ativa), None)
+        if ativa is None:
+            texto += " A placa ainda não confirmou qual banda está ativa."
+        elif ativa.indice != banda.indice:
+            texto += (
+                f" <b>Ativa na placa: banda {ativa.indice}</b> — o envio da "
+                "configuração troca para esta antes de medir."
+            )
+        else:
+            texto += " Esta é a banda ativa na placa."
+        self.ad_banda_info.setText(texto)
+
+    def _consulta_bandas(self) -> None:
+        """Pergunta à placa como as bandas estão configuradas (comando B)."""
+        if self.mode != "ad5933" or not self._acq.is_open:
+            return
+        self._acq.send_text("B")
+
+    def _aplica_banda(self) -> None:
+        """Torna ativa a banda escolhida (comando ``B sel=``)."""
+        if not self._require_connection():
+            return
+        banda = self._banda_selecionada()
+        if banda is None:
+            QMessageBox.information(
+                self,
+                "Banda de varredura",
+                "A placa ainda não informou as bandas disponíveis. "
+                "Aguarde a resposta ao comando B ou reconecte.",
+            )
+            return
+        self._banda_travada = True
+        self._acq.send_text(f"B sel={banda.indice}")
+        # Relê a listagem: o MCLK que vale é o efetivamente sintetizado.
+        QTimer.singleShot(300, self._consulta_bandas)
+        self.status_label.setText(
+            f"Banda {banda.indice} aplicada — aguardando a confirmação da "
+            "placa."
+        )
+
+    def _processa_linha_banda(self, line: str) -> None:
+        """Atualiza a tabela de bandas com uma resposta ``# BAND``.
+
+        Args:
+            line: Linha crua recebida pela porta serial.
+        """
+        from calibracao import analisa_linha_banda
+
+        analisada = analisa_linha_banda(line)
+        if analisada is None:
+            return
+        tipo, banda = analisada
+        if banda.ativa:
+            for outra in self._bandas.values():
+                outra.ativa = False
+        elif tipo != "lista" and banda.indice in self._bandas:
+            # 'ok' não fala de banda ativa: preserva o que já se sabia.
+            banda.ativa = self._bandas[banda.indice].ativa
+        self._bandas[banda.indice] = banda
+        self._atualiza_combo_bandas()
+
+
     def _send_ad5933_config(self) -> None:
         """Envia a configuração de varredura ao firmware (comando C)."""
         if not self._require_connection():
@@ -2825,6 +3021,29 @@ class SerialDialog(QDialog):
                 "A frequência final deve ser maior que a inicial.",
             )
             return
+        from calibracao import valida_faixa
+
+        banda = self._banda_selecionada()
+        aviso = valida_faixa(banda, f0, f1)
+        if aviso is not None:
+            resposta = QMessageBox.question(
+                self,
+                "Faixa fora da banda",
+                aviso + "\n\nEnviar assim mesmo?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if resposta != QMessageBox.StandardButton.Yes:
+                return
+        if banda is not None and not banda.ativa:
+            # A palavra de frequência do AD5933 é calculada com o MCLK da
+            # banda ATIVA: sem aplicar a banda antes do 'C', f0 e df
+            # sairiam deslocados na mesma proporção da diferença de clock
+            # — o eixo inteiro do espectro erra. As linhas vão juntas de
+            # propósito: o firmware drena o buffer da serial em ordem.
+            self._acq.send_text(f"B sel={banda.indice}")
+
         n = int(self.ad_npts.value())
         df = (f1 - f0) / (n - 1)
         command = (
@@ -2835,9 +3054,11 @@ class SerialDialog(QDialog):
             f"dly={self.ad_delay.value()}"
         )
         self._acq.send_text(command)
+        banda = self._banda_selecionada()
+        alvo = "" if banda is None else f"banda {banda.indice}, "
         self.status_label.setText(
-            f"Configuração enviada: {f0:.1f}–{f1:.1f} Hz, {n} pontos, "
-            f"{self.ad_range_combo.currentText()}, "
+            f"Configuração enviada: {alvo}{f0:.1f}–{f1:.1f} Hz, "
+            f"{n} pontos, {self.ad_range_combo.currentText()}, "
             f"PGA {self.ad_pga_combo.currentText()}."
         )
 
@@ -2929,6 +3150,10 @@ class SerialDialog(QDialog):
             f"Conectado a {self._acq.port_name} "
             f"({self._selected_baud()} baud). Aguardando dados…"
         )
+        if self.mode == "ad5933":
+            # A placa reinicia quando a porta abre (DTR do conversor USB),
+            # e só responde depois do boot — daí a espera antes do 'B'.
+            QTimer.singleShot(1500, self._consulta_bandas)
 
     def _on_closed(self) -> None:
         self.connect_button.setChecked(False)
@@ -2949,6 +3174,9 @@ class SerialDialog(QDialog):
     def _on_raw_line(self, line: str) -> None:
         """Adiciona uma linha bruta ao log (com limite de tamanho)."""
         self.log_edit.appendPlainText(line)
+
+        if self.mode == "ad5933" and "BAND" in line:
+            self._processa_linha_banda(line)
         document = self.log_edit.document()
         if document.blockCount() > self._MAX_LOG_LINES:
             cursor = self.log_edit.textCursor()

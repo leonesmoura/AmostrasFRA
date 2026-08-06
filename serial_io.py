@@ -90,9 +90,44 @@ _PAIR_RE = re.compile(
 )
 
 
+#: Primeiras palavras das mensagens de status do firmware do projeto.
+#: Elas vêm prefixadas por ``#``, que o parser genérico trata como mero
+#: marcador de dados — sem esta lista, uma linha como
+#: ``# BAND i=0 mclk=16776000`` viraria um ponto de medição, porque o
+#: rótulo ``i`` significa corrente. O mesmo valia para ``# RAW f=...``.
+_STATUS_KEYWORDS: frozenset[str] = frozenset({
+    "band", "cal", "cfg", "raw", "erro", "aviso", "temperatura",
+    "excitacao", "excitação", "varredura",
+})
+
+
 def _strip_marker(line: str) -> str:
     """Remove um marcador de início de linha (``#``, ``$``, ...)."""
     return re.sub(rf"^\s*[{re.escape(_MARKER_CHARS)}]+\s*", "", line)
+
+
+def _e_status_do_firmware(line: str) -> bool:
+    """Indica se a linha é uma mensagem de status, e não um ponto.
+
+    Só considera linhas que realmente começam com um marcador, para não
+    descartar dados de um embarcado genérico que use essas palavras como
+    rótulo legítimo.
+
+    Args:
+        line: Linha crua recebida pela porta serial.
+
+    Returns:
+        ``True`` quando a linha é status do firmware e deve ser ignorada
+        pela aquisição.
+    """
+    bruta = line.lstrip()
+    if not bruta or bruta[0] not in _MARKER_CHARS:
+        return False
+    resto = _strip_marker(line).lstrip()
+    if not resto:
+        return False
+    primeira = re.split(r"[\s:=]", resto, maxsplit=1)[0]
+    return primeira.lower() in _STATUS_KEYWORDS
 
 
 def parse_labeled(line: str) -> Optional[dict[int, float]]:
@@ -213,6 +248,13 @@ class SerialLineParser:
             Linha canônica (7 valores ``float``/``None``), ou ``None``
             se a linha não contiver dados numéricos reconhecíveis.
         """
+        # As mensagens de status do firmware vêm com o mesmo prefixo "#"
+        # que o parser usa como marcador de dados. Sem esta guarda,
+        # "# BAND i=0 ..." entraria na aquisição como um ponto com a
+        # coluna de corrente preenchida.
+        if _e_status_do_firmware(line):
+            return None
+
         clean = _strip_marker(line)
         if not clean.strip():
             return None

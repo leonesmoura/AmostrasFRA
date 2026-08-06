@@ -317,6 +317,66 @@ def clock_externo() -> None:
     _salva(fig, "ad5933_clock")
 
 
+def plano_bandas() -> None:
+    """Cobertura de cada banda de clock e as sobreposições entre elas."""
+    razao_teto = 167.76          # f_max = MCLK / 167,76 (spec: 100 kHz @ 16,776 MHz)
+    bandas = [
+        ("Banda 2", 163_840.0, "#8f6fbf"),
+        ("Banda 1", 1_638_400.0, "#2f7a3f"),
+        ("Banda 0\n(oscilador interno)", MCLK_HZ, "#1f5fa8"),
+    ]
+
+    y0, y1 = -0.9, 2.9
+    fig, ax = plt.subplots(figsize=(7.8, 3.8))
+
+    def _frac(y):
+        """Converte a coordenada de dados em fração do eixo (para axvspan)."""
+        return (y - y0) / (y1 - y0)
+
+    # Sobreposições primeiro, para ficarem atrás das barras. Cada uma cobre
+    # apenas as duas bandas envolvidas — desenhar de ponta a ponta faria as
+    # duas parecerem uma região só.
+    for baixa, alta in ((0, 1), (1, 2)):
+        ini = bandas[alta][1] / (AMOSTRAS_DFT * DIVISOR_ADC)
+        fim = bandas[baixa][1] / razao_teto
+        ax.axvspan(ini, fim, ymin=_frac(baixa - 0.42), ymax=_frac(alta + 0.42),
+                   color="#c8a020", alpha=0.18, zorder=0)
+        ax.text(np.sqrt(ini * fim), (baixa + alta) / 2.0,
+                f"sobreposição\n{ini:.0f} – {fim:.0f} Hz", ha="center",
+                va="center", fontsize=7, color="#6b4600", style="italic",
+                zorder=1)
+
+    for i, (nome, mclk, cor) in enumerate(bandas):
+        fmin = mclk / (AMOSTRAS_DFT * DIVISOR_ADC)
+        fmax = mclk / razao_teto
+        ax.plot([fmin, fmax], [i, i], lw=12, color=cor, solid_capstyle="butt",
+                alpha=0.9, zorder=3)
+        ax.text(fmin * 0.75, i, nome, ha="right", va="center", fontsize=8,
+                color=cor, zorder=4)
+        rotulo_mclk = (f"MCLK {mclk / 1e6:.4g} MHz" if mclk >= 1e6
+                       else f"MCLK {mclk / 1e3:.4g} kHz")
+        faixa = (f"{fmin:.0f} Hz – "
+                 + (f"{fmax / 1000:.1f} kHz" if fmax >= 1000
+                    else f"{fmax:.0f} Hz"))
+        ax.text(np.sqrt(fmin * fmax), i, rotulo_mclk, ha="center",
+                va="center", fontsize=7.5, color="white", weight="bold",
+                zorder=4)
+        ax.text(fmax * 1.35, i, faixa, ha="left", va="center", fontsize=7.5,
+                color="#333333", zorder=4)
+
+    ax.set_xscale("log")
+    ax.set_xlim(4, 1.2e6)
+    ax.set_ylim(y0, y1)
+    ax.set_yticks([])
+    ax.set_xlabel("frequência de excitação (Hz)")
+    ax.set_title(
+        "Cada clock cobre ~97:1 — três décadas exigem bandas",
+        fontsize=10)
+    ax.grid(True, axis="x", which="both", alpha=0.25)
+    fig.tight_layout()
+    _salva(fig, "ad5933_bandas")
+
+
 if __name__ == "__main__":
     print("Gerando figuras do tópico AD5933 em", DESTINO)
     diagrama_blocos()
@@ -325,4 +385,5 @@ if __name__ == "__main__":
     faixa_impedancia()
     ganho_pga()
     clock_externo()
+    plano_bandas()
     print("Concluído.")

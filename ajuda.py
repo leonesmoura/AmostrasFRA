@@ -609,6 +609,12 @@ da banda.</li>
 <li><b>A resistência de saída do próprio chip</b>, o <code>ROUT</code>,
 que fica eletricamente <b>em série</b> com a amostra.</li>
 </ul>
+<p>Os dois primeiros — ganho e fase — dependem do <b>ganho do PGA</b> e
+da <b>banda de clock</b>, e por isso existe um jogo de coeficientes para
+cada combinação: 3 bandas × 2 ganhos = <b>seis perfis</b>. O
+<code>ROUT</code> é o oposto: é propriedade do estágio de saída do chip,
+não muda com o PGA nem com o clock, e por isso é <b>um valor único</b>,
+determinado uma vez e compartilhado por todos os perfis.</p>
 
 <h2>Por que são dois padrões, e não um</h2>
 <p>Este é o ponto que mais gera erro silencioso. O que o instrumento
@@ -638,6 +644,40 @@ aparecem deformados ou inclinados, e o ajuste de circuito equivalente
 converge para elementos que não existem. Por isso a fase é ajustada por
 uma reta em frequência, e o ganho por um polinômio de grau 2.</p>
 
+<h2>Uma calibração para cada banda</h2>
+<p>Para descer abaixo de 1&nbsp;kHz o instrumento troca o clock mestre —
+é a <b>varredura por bandas</b> descrita no tópico <b>Clock externo e
+bandas</b>. Isso obriga a calibrar cada banda separadamente, e o motivo
+é o parágrafo anterior levado a sério.</p>
+<p>O atraso do sistema tem duas parcelas: o caminho analógico e a
+<b>janela da DFT</b>, que dura <code>16384 ÷ MCLK</code>. A segunda é
+<i>proporcional ao clock</i> — de 0,98&nbsp;ms na banda 0 ela passa a
+10&nbsp;ms na banda 1 e a 100&nbsp;ms na banda 2. Como a fase de um
+atraso é <code>−2πfτ</code>, mudar o clock muda a <b>inclinação</b> da
+reta de fase. Reaproveitar os coeficientes de uma banda em outra gira o
+diagrama de Nyquist inteiro: os semicírculos aparecem inclinados e o
+ajuste de circuito converge para elementos que não existem. O ganho
+<code>K(f)</code> também muda, porque a faixa de frequência e a resposta
+do filtro passam a ser outras.</p>
+<p>Na prática:</p>
+<ul>
+<li>selecione a banda <b>antes</b> de abrir o assistente, e calibre-a
+com padrões medidos <b>dentro da faixa útil dela</b>;</li>
+<li>o <code>ROUT</code> só precisa dos dois padrões <b>uma vez</b>: nas
+demais bandas e ganhos o assistente reaproveita o valor;</li>
+<li>o comando <code>G</code> lista os seis perfis e informa, para cada
+um, se veio da memória da placa ou dos valores compilados no
+firmware;</li>
+<li>uma banda <b>sem calibração recusa varrer</b>. Isso é proposital:
+sem os coeficientes daquela banda, os inteiros do conversor não têm como
+virar ohms.</li>
+</ul>
+<p>A prova de que o conjunto está coerente é a <b>emenda</b>: as bandas
+se superpõem em quase uma década, e o mesmo ponto medido nas duas tem de
+dar a mesma impedância. Um degrau na emenda é o sintoma clássico de
+calibração ruim em uma delas.</p>
+
+
 <h2>Escolhendo os padrões</h2>
 <ul>
 <li>Perto dos <b>extremos</b> da faixa que você vai medir — quanto mais
@@ -652,9 +692,12 @@ temperatura. Resistores de fio têm indutância e falseiam a fase.</li>
 <ol>
 <li><b>Apresentação</b> — o que será feito e o que ter em mãos.</li>
 <li><b>Configuração da varredura</b> — ganho do PGA, excitação, faixa de
-frequência, número de pontos e acomodação. Use aqui <b>exatamente</b> a
+frequência, número de pontos e acomodação, sobre a <b>banda de clock que
+estiver ativa</b> (selecione-a antes, com <code>B sel=…</code> no
+terminal, se não for a banda 0). Use aqui <b>exatamente</b> a
 configuração com que pretende medir as amostras: a calibração vale para
-uma combinação específica.</li>
+uma combinação específica de banda e ganho, e a faixa de frequência
+precisa caber entre o piso e o teto da banda escolhida.</li>
 <li><b>Primeiro padrão</b> — ligue-o entre os dois terminais da amostra,
 digite o valor medido e clique em <b>Medir padrão</b>.</li>
 <li><b>Segundo padrão</b> — idem, com o resistor do outro extremo. Há um
@@ -662,8 +705,9 @@ botão para <b>pular</b> esta etapa quando o <code>ROUT</code> já for
 conhecido.</li>
 <li><b>Resultado</b> — números de qualidade e o gráfico de erro. O botão
 <b>Gravar na placa</b> guarda os coeficientes na memória não volátil do
-ESP32, de onde eles são lidos a cada partida — não é preciso recompilar
-o firmware.</li>
+ESP32, <b>no perfil daquela banda e daquele ganho</b>, de onde são lidos
+a cada partida — não é preciso recompilar o firmware. Os outros perfis
+não são tocados.</li>
 </ol>
 
 <h2>Como interpretar o resultado</h2>
@@ -689,8 +733,13 @@ tenha entrado na calibração.</p>
 <h2>Quando recalibrar</h2>
 <p>Sempre que mudar qualquer elo da cadeia: o resistor de
 transimpedância da placa, a faixa de excitação, o ganho do PGA ou o
-clock do AD5933. O botão <b>Restaurar calibração de fábrica</b> apaga a
-calibração gravada e volta aos coeficientes compilados no firmware.</p>
+clock do AD5933. O clock é o caso mais radical — cada banda é uma
+calibração inteira, e alterar o MCLK de uma banda (comando
+<code>B i=… mclk=…</code>) invalida os perfis dela.</p>
+<p>O botão <b>Restaurar calibração de fábrica</b> apaga a calibração
+gravada e volta aos coeficientes compilados no firmware — o que hoje
+significa a banda 0 calibrada e as bandas 1 e 2 novamente sem
+calibração.</p>
 """, "serial"))
 
     # -- O analisador AD5933 -----------------------------------------------
@@ -813,6 +862,12 @@ abaixo do piso e explica o motivo, em vez de deixar passar.</p>
 excitação. Acima disso o desempenho do estágio analógico e a rejeição do
 filtro deixam de ser garantidos. A placa deste projeto foi caracterizada
 até 100&nbsp;kHz.</p>
+<p>O teto também acompanha o clock, na proporção
+<code>f<sub>máx</sub> = MCLK ÷ 167,76</code> — que dá justamente
+100&nbsp;kHz com o oscilador interno. Como piso e teto são ambos
+proporcionais ao MCLK, a razão entre eles é fixa em
+16384/167,76 ≈ <b>97,7</b>: <b>um clock cobre pouco menos de duas
+décadas</b>, qualquer que seja ele.</p>
 
 <h2>Resolução</h2>
 <p>A palavra de frequência tem 24 bits e o passo é
@@ -822,8 +877,11 @@ fator limitante: o número de pontos por varredura é que é limitado a
 
 <h2>Para descer abaixo de 1 kHz</h2>
 <p>O piso é proporcional ao clock, e não uma limitação absoluta do chip.
-Fornecendo um clock mais lento pelo conector SMA, a banda inteira desce
-junto — ver o tópico <b>Clock externo</b>. É o caminho para alcançar a
+Fornecendo um clock mais lento pelo conector SMA, a faixa inteira desce
+junto. Como cada clock cobre pouco menos de duas décadas, ir de
+100&nbsp;Hz a 100&nbsp;kHz exige <b>mais de um clock</b>: a varredura
+passa a ser feita por bandas, cada uma com seu MCLK e sua calibração —
+ver o tópico <b>Clock externo e bandas</b>. É o caminho para alcançar a
 faixa de dezenas de hertz, onde ficam os fenômenos lentos de um módulo
 fotovoltaico.</p>
 """, "ad5933"))
@@ -956,67 +1014,232 @@ resultado.</li>
 </ul>
 """, "ad5933"))
 
-    s.append(("ad5933_clock", "Clock externo (abaixo de 1 kHz)", f"""
-<h1>Clock externo — medindo abaixo de 1 kHz</h1>
+    s.append(("ad5933_clock", "Clock externo e bandas", f"""
+<h1>Clock externo e varredura por bandas</h1>
 
-<h2>O princípio</h2>
+<h2>O princípio: tudo pende do clock</h2>
 <p>Tudo no AD5933 é derivado do clock mestre: a frequência sintetizada
-pelo DDS, a taxa de amostragem do conversor e, por consequência, a
-duração da janela da DFT. Como o piso de frequência é
-<code>MCLK ÷ 16384</code>, <b>baixar o clock desloca a banda inteira
-para baixo</b>, na mesma proporção.</p>
+pelo DDS, a taxa de amostragem do conversor (MCLK/16) e, por
+consequência, a duração da janela da DFT. Os <b>dois</b> extremos da
+faixa útil são proporcionais ao MCLK:</p>
+<p align="center"><code>f<sub>mín</sub> = MCLK ÷ 16384</code>
+&nbsp;&nbsp;&nbsp;
+<code>f<sub>máx</sub> = MCLK ÷ 167,76</code></p>
+<p>O piso vem de exigir <b>ao menos um ciclo completo</b> da excitação
+dentro da janela de 1024 amostras da DFT. O teto vem do outro lado: em
+<code>MCLK ÷ 167,76</code> o conversor ainda tira 167,76/16 ≈
+<b>10,5 amostras por ciclo</b> — é a condição em que o chip foi
+especificado (100&nbsp;kHz com o oscilador interno de 16,776&nbsp;MHz).
+Mantida essa razão, a faixa inteira desliza com o clock sem alterar as
+condições de operação do caminho analógico.</p>
 
 {_img("ad5933_clock.png")}
 
-<p>Para alcançar uma frequência mínima desejada, o clock necessário é</p>
-<p align="center"><code>MCLK = f<sub>mín</sub> × 16384</code></p>
-<p>Ou seja: para medir <b>10 Hz</b> são necessários cerca de
-<b>164 kHz</b> de clock. Note que o teto da banda desce junto — com
-164&nbsp;kHz de MCLK a frequência máxima cai para a casa do quilohertz.
-<b>Não existe uma configuração única que cubra de 10 Hz a 100 kHz</b>:
-a varredura passa a ser feita <b>por bandas</b>, cada uma com seu clock
-e sua calibração.</p>
+<h2>Por que um clock só não basta</h2>
+<p>Como piso e teto são proporcionais ao <i>mesmo</i> MCLK, a razão
+entre eles é uma <b>constante do chip</b>, e não uma escolha de
+projeto:</p>
+<p align="center"><code>f<sub>máx</sub> ÷ f<sub>mín</sub> =
+16384 ÷ 167,76 ≈ 97,7</code></p>
+<p>Isto é: qualquer clock cobre <b>1,99 décadas</b> — pouco menos de
+duas. Medir de 100&nbsp;Hz a 100&nbsp;kHz são <b>três décadas</b>
+(razão 1000), e nenhum clock faz isso sozinho: baixá-lo até alcançar os
+100&nbsp;Hz derruba o teto para ~9,8&nbsp;kHz; mantê-lo alto para chegar
+aos 100&nbsp;kHz sobe o piso para ~1&nbsp;kHz. A varredura passa então a
+ser feita <b>por bandas</b>, cada uma com seu MCLK e sua própria
+calibração.</p>
 
-<h2>Onde ligar</h2>
-<p>Na placa KDT5933-013 o conector <b>SMA P5</b> está ligado
-diretamente ao pino MCLK (pino 8) do AD5933, com um resistor de
-1&nbsp;kΩ como <i>pull-down</i>. O footprint <b>U5</b>, que vem sem
-componente, está na <b>mesma rede</b> — de modo que soldar ali um
-oscilador do valor desejado é uma alternativa ao cabo SMA.</p>
-<p>O sinal deve ser uma <b>onda quadrada</b> de nível compatível com a
-alimentação digital do chip (3,3&nbsp;V). Um ESP32 gera isso sem
-hardware adicional, pelo periférico LEDC ou por um canal de PWM
-dedicado.</p>
+<h2>As três bandas</h2>
+<table border="1" cellpadding="4" cellspacing="0">
+<tr><th>Banda</th><th>MCLK</th><th>Origem do clock</th>
+<th>f<sub>mín</sub></th><th>f<sub>máx</sub></th></tr>
+<tr><td><b>0</b></td><td>16,776 MHz</td><td>oscilador interno</td>
+<td>1023,9 Hz</td><td>100,0 kHz</td></tr>
+<tr><td><b>1</b></td><td>1,6384 MHz</td><td>ESP32 (externo)</td>
+<td>100,0 Hz</td><td>9,77 kHz</td></tr>
+<tr><td><b>2</b></td><td>163,84 kHz</td><td>ESP32 (externo)</td>
+<td>10,0 Hz</td><td>977 Hz</td></tr>
+</table>
 
-<h2>O que mudar no firmware</h2>
+{_img("ad5933_bandas.png")}
+
+<p>As bandas <b>0 e 1</b> já cobrem, juntas, o objetivo de
+<b>100&nbsp;Hz a 100&nbsp;kHz</b>; a banda 2 é o degrau extra, até
+<b>10&nbsp;Hz</b>, onde ficam os fenômenos lentos de um módulo
+fotovoltaico. Esses são os valores de fábrica do firmware e podem ser
+trocados pelo comando <code>B</code> — o piso e o teto são recalculados
+a partir do MCLK que estiver configurado.</p>
+<p><b>O preço da banda baixa é o tempo.</b> A janela da DFT vale
+<code>16384 ÷ MCLK</code>: 0,98&nbsp;ms na banda 0, <b>10&nbsp;ms</b> na
+banda 1 e <b>100&nbsp;ms</b> na banda 2 — e a isso se soma a acomodação,
+que é contada em ciclos (N ÷ f) e portanto também estica. Uma varredura
+de baixa frequência é legitimamente lenta; não há nada de errado
+nisso.</p>
+
+<h2>A sobreposição entre bandas não é desperdício</h2>
+<p>Repare que as faixas se <b>superpõem</b>: 100&nbsp;Hz a 977&nbsp;Hz é
+comum às bandas 2 e 1; 1,02&nbsp;kHz a 9,77&nbsp;kHz é comum às bandas 1
+e 0. Quase uma década de superposição em cada emenda — e isso é
+deliberado.</p>
+<p>Na região comum, o <b>mesmo ponto físico</b> da mesma amostra é
+medido por duas cadeias que só têm a amostra em comum: clocks
+diferentes, janelas de DFT diferentes, calibrações independentes. Se as
+duas derem a mesma impedância, é evidência forte de que o espectro
+emendado é uma curva física única, e não um artefato do procedimento. Se
+aparecer um <b>degrau na emenda</b>, ele denuncia o quê:</p>
+<ul>
+<li><b>degrau em |Z|</b> — erro de ganho: o <code>K(f)</code> de uma das
+bandas está mal ajustado, ou o padrão usado naquela banda estava fora da
+faixa útil do R<sub>FB</sub>;</li>
+<li><b>degrau só na fase</b> — a reta de fase de uma das bandas está
+errada. É o defeito mais comum, justamente porque a inclinação dela
+depende do clock;</li>
+<li><b>discrepância que cresce em direção à borda</b> — a varredura foi
+levada até o limite da banda; recue um pouco de
+f<sub>mín</sub>/f<sub>máx</sub>.</li>
+</ul>
+<p>É a única verificação interna disponível sem um segundo instrumento.
+Vale registrá-la no relatório do ensaio, junto com a validação de
+Kramers-Kronig do espectro emendado.</p>
+
+<h2>Por que 200 kHz está fora de especificação</h2>
+<p>A pergunta é natural: se baixar o clock desce a faixa, subir o clock
+não subiria? Não — e o limite é duplo:</p>
+<ul>
+<li>o datasheet especifica <b>100&nbsp;kHz</b> como frequência máxima de
+excitação, acima da qual o estágio analógico e a rejeição do filtro
+deixam de ser garantidos;</li>
+<li>o datasheet especifica <b>16,776&nbsp;MHz</b> como MCLK máximo, e
+chegar a 200&nbsp;kHz exigiria
+200&nbsp;kHz × 167,76 = <b>33,552&nbsp;MHz</b> — o <b>dobro</b> do
+permitido.</li>
+</ul>
+<p>Por isso o teto do sistema é <b>fixo em 100&nbsp;kHz</b>: as bandas
+só andam para baixo. Forçar o chip acima disso continuaria produzindo
+números, e números fora de especificação não se distinguem de uma medida
+boa olhando o gráfico.</p>
+
+<h2>Ligação física</h2>
+<p>Na placa KDT5933-013 o conector <b>SMA P5</b> está ligado diretamente
+ao pino <b>MCLK</b> (pino 8) do AD5933, com um resistor de 1&nbsp;kΩ
+como <i>pull-down</i>. É o ponto de injeção do clock externo:</p>
+<ul>
+<li><b>Sinal</b> — do GPIO do ESP32 (padrão <b>GPIO&nbsp;26</b>,
+constante <code>PINO_MCLK</code> no firmware, ajustável) para o
+<b>pino central</b> do SMA P5.</li>
+<li><b>Terra comum</b> — GND do ESP32 à malha do SMA, pelo caminho mais
+curto possível. Sem referência comum não existe "onda quadrada de
+3,3&nbsp;V": existe ruído.</li>
+<li><b>Resistor de ~100&nbsp;Ω em série</b> na saída do ESP32. As bordas
+do LEDC são de poucos nanossegundos e o cabo se comporta como linha de
+transmissão: os 100&nbsp;Ω amortecem a reflexão, matam o <i>ringing</i>
+na entrada de clock e reduzem o quanto esse chaveamento se acopla ao
+caminho analógico do receptor, que está na mesma placa.</li>
+</ul>
+<p>Os 100&nbsp;Ω em série com o <i>pull-down</i> de 1&nbsp;kΩ formam um
+divisor: o nível alto chega em 3,3&nbsp;V × 1000/1100 ≈
+<b>3,0&nbsp;V</b>, confortavelmente acima do V<sub>IH</sub> da entrada,
+e a corrente exigida do GPIO fica em ~3&nbsp;mA. O nível é
+<b>3,3&nbsp;V</b> porque o MCLK é uma entrada digital alimentada pelo
+DVDD do chip.</p>
+<p><b>Alternativa sem cabo:</b> o footprint <b>U5</b>, que vem vazio,
+está na <b>mesma rede</b> do MCLK — soldar ali um oscilador encapsulado
+do valor desejado dá um clock de cristal, mais exato e mais limpo que o
+LEDC, ao custo de ser fixo (um oscilador por banda).</p>
+
+<h2>Como trocar de banda</h2>
+<p>Nada disso exige recompilar: o firmware guarda <b>três bandas</b>, e
+o <b>ESP32 gera o clock</b> das duas externas por hardware. Na janela
+<i>Conexão Serial</i>, no modo AD5933, o seletor <b>Banda</b> mostra as
+três com o clock e a faixa útil de cada uma; enviar a configuração já
+aplica a banda escolhida antes de programar a varredura.</p>
 <ol>
-<li>Ajustar <code>AD5933_MCLK_HZ</code> em <code>src/main.cpp</code>
-para a frequência <b>real</b> injetada. Todo o cálculo da palavra de
-frequência e o piso da DFT acompanham automaticamente esse valor.</li>
-<li>Definir <code>USAR_CLOCK_EXTERNO = true</code>, o que liga o bit
-<b>D3</b> do registrador de controle (<code>0x81</code>) e faz o chip
+<li>A <b>banda 0</b> usa o oscilador interno de 16,776&nbsp;MHz e cobre
+de ~1&nbsp;kHz a 100&nbsp;kHz. É a única que vem calibrada de fábrica.</li>
+<li>As <b>bandas 1 e 2</b> usam o clock do ESP32 e descem a faixa na
+mesma proporção. Ao selecioná-las o firmware liga o gerador e o bit
+<b>D3</b> do registrador de controle (<code>0x81</code>), que faz o chip
 ignorar o oscilador interno.</li>
-<li><b>Recalibrar</b>. O ganho e sobretudo a fase do sistema dependem do
-clock — o atraso equivalente muda, e com ele toda a correção de fase.</li>
+<li>O clock que vale é o <b>efetivamente sintetizado</b> pelo divisor do
+ESP32, não o valor nominal pedido — o firmware devolve esse número, e é
+ele que aparece no seletor. Como a frequência de excitação é
+proporcional ao MCLK, usar o nominal deslocaria todo o eixo do espectro.</li>
+<li><b>Recalibrar cada banda.</b> O ganho e sobretudo a fase do sistema
+dependem do clock — o atraso equivalente muda, e com ele toda a correção
+de fase. Por isso existe um jogo de coeficientes por banda e por ganho
+do PGA, e o firmware <b>recusa a varredura</b> numa banda ainda não
+calibrada, em vez de emitir ohms sem sentido.</li>
 </ol>
 <p><b>Cuidado:</b> o driver de referência do fabricante contém um erro
 justamente nesse bit — a constante está comentada como
 <code>1&lt;&lt;3</code> mas vale <code>1&lt;&lt;2</code>. Não copie de
 lá.</p>
 
-<h2>Precisão do clock</h2>
-<p>A frequência de excitação é proporcional ao MCLK, então qualquer
-erro no clock vira erro proporcional na frequência do eixo do espectro.
-Um oscilador de cristal resolve; um clock derivado de temporizador de
-microcontrolador funciona, mas convém <b>medir</b> a frequência real com
-frequencímetro ou osciloscópio e informar esse valor ao firmware, em vez
-de confiar no valor nominal.</p>
+<h2>Por que vale a frequência sintetizada, e não a nominal</h2>
+<p>O LEDC não sintetiza qualquer frequência: ele divide os 80&nbsp;MHz
+do APB por um divisor de <b>ponto fixo</b>, de modo que o valor pedido é
+arredondado para o mais próximo que o divisor consegue produzir. A sobra
+costuma ser da ordem de <b>0,1&nbsp;%</b> — pequena, mas não desprezível
+pelo motivo a seguir.</p>
+<p>A frequência de excitação é <b>proporcional ao MCLK</b>, porque é
+dele que se calcula a palavra de frequência. Um erro no MCLK adotado não
+espalha ruído: ele <b>desloca todo o eixo de frequência do espectro</b>
+pelo mesmo fator, de forma sistemática e invisível no gráfico. As
+frequências características lidas do Nyquist e do Bode — e tudo o que se
+extrai delas, como o C obtido de ω·R<sub>p</sub>·C&nbsp;=&nbsp;1 —
+sairiam enviesadas na mesma proporção.</p>
+<p>Por isso o firmware <b>lê de volta</b> o valor que o
+<code>ledcSetup()</code> devolve, que é a frequência realmente
+sintetizada, e adota <i>esse</i> número como o MCLK da banda — nunca o
+nominal que foi pedido. É ele que aparece na resposta dos comandos
+<code>B</code> e que alimenta a palavra de frequência, o piso da DFT, o
+teto da banda e o tempo-limite de cada ponto.</p>
+<p>Com um <b>oscilador encapsulado</b> em U5 o problema muda de figura:
+a exatidão passa a ser a do cristal (dezenas de ppm), mas o firmware não
+tem como lê-la. Nesse caso <b>meça</b> a frequência com frequencímetro
+ou osciloscópio e informe-a com <code>B i=… mclk=…</code>, em vez de
+confiar no valor impresso no componente.</p>
+
+<h2>Roteiro completo de uso</h2>
+<ol>
+<li><b>Ligue o clock</b> — GPIO 26 ao pino central do SMA P5, com os
+~100&nbsp;Ω em série, e os terras juntos. A banda 0 não precisa de nada
+disso: ela usa o oscilador interno.</li>
+<li><b>Confira as bandas</b> — mande <code>B</code> e leia as três
+linhas. Confirme que o MCLK efetivo de cada banda externa é o esperado e
+que o piso e o teto anunciados cobrem a faixa que você pretende varrer.
+Se usar outro oscilador, ajuste com
+<code>B i=… mclk=… ext=1</code>.</li>
+<li><b>Calibre a banda 0</b> — <code>B sel=0</code> e depois o
+assistente de calibração, com <b>dois padrões</b>. É aqui que o
+R<sub>OUT</sub> é determinado; como ele é do chip, vale para todas as
+bandas.</li>
+<li><b>Calibre a banda 1</b> — <code>B sel=1</code> e repita o
+assistente <i>dentro da faixa daquela banda</i> (ex.: 120&nbsp;Hz a
+9&nbsp;kHz). Com o R<sub>OUT</sub> já conhecido, um padrão basta. Depois
+repita para a banda 2. Cada ganho de PGA que você pretenda usar precisa
+da sua própria calibração.</li>
+<li><b>Varra banda por banda</b> — uma varredura por banda, cada uma
+dentro dos seus limites e com folga nas bordas, fazendo questão de
+incluir alguns pontos <b>dentro da superposição</b> com a banda
+vizinha.</li>
+<li><b>Confira a emenda</b> — crie uma medição por banda e compare-as no
+Bode (magnitude e fase) da aba <b>Comparação</b>. Sem degrau na região
+comum, os pontos podem ser unidos numa medição só; com degrau, volte à
+calibração da banda suspeita <i>antes</i> de qualquer análise.</li>
+<li><b>Valide</b> — rode Kramers-Kronig no espectro emendado. Uma emenda
+mal feita costuma aparecer como resíduo sistemático concentrado na
+frequência da junção.</li>
+</ol>
 
 <h2>Estado neste projeto</h2>
-<p>A placa opera hoje com o <b>oscilador interno</b>, cobrindo de
-1&nbsp;kHz a 100&nbsp;kHz, faixa em que foi calibrada e validada. O
-clock externo está previsto como etapa seguinte, para alcançar a região
-de baixa frequência do espectro dos módulos.</p>
+<p>A <b>banda 0</b> (oscilador interno) é a que está calibrada e
+validada, de 2&nbsp;kHz a 100&nbsp;kHz. As <b>bandas 1 e 2</b> saem de
+fábrica <b>sem calibração</b>, e o firmware <b>recusa varrer</b> nelas
+até que sejam calibradas, explicando o motivo — em vez de emitir ohms
+que não têm lastro em padrão nenhum. Uma varredura recusada é um
+aborrecimento; um espectro em ohms inventados, defendido numa
+dissertação, é outra coisa.</p>
 """, "ad5933"))
 
     # -- Simulação ---------------------------------------------------------
